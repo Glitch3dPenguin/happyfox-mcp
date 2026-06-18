@@ -7,13 +7,15 @@ This is a Model Context Protocol (MCP) server that allows AI agents to interact 
 - Retrieve full details for specific tickets.
 - Create new support tickets.
 - Add public updates or private internal notes to existing tickets.
+- Update ticket attributes (Status, Priority, Category).
+- Discover available statuses and categories from the system.
 
 ## Installation
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/Glitch3dPenguin/my-project.git
-   cd my-project
+   git clone https://github.com/Glitch3dPenguin/happyfox-mcp.git
+   cd happyfox-mcp
    ```
 
 2. Install dependencies:
