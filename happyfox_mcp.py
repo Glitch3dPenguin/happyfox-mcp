@@ -62,9 +62,9 @@ def list_tickets(
         "q":      query,
         "page":   page,
         "size":   min(size, 50),
-        # Ask for only the fields we actually render – keeps the response
-        # smaller on the wire too.
-        "fields": "id,display_id,subject,status,priority,assigned_to,created_at,last_updated_at,unresponded",
+        # Note: HappyFox ignores the 'fields' param on most accounts, so we
+        # receive the full response and manually extract only what we need
+        # before returning – keeping agent output compact regardless.
     }
     r = requests.get(url, auth=_auth(), params=params)
     if r.status_code != 200:
