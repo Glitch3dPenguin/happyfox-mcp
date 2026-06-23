@@ -1,1 +1,17 @@
+services:
+  happyfox-mcp:
+    image: ghcr.io/glitch3dpenguin/happyfox-mcp:latest
+    container_name: happyfox-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # HappyFox credentials
+      HAPPYFOX_DOMAIN: "yourcompany.happyfox.com"
+      HAPPYFOX_API_KEY: "your_api_key_here"
+      HAPPYFOX_AUTH_CODE: "your_auth_code_here"
 
+      # Transport — streamable-http recommended for container deployments.
+      # Options: streamable-http | sse | stdio
+      MCP_TRANSPORT: "streamable-http"
+      PORT: "8000"

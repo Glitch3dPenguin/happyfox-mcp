@@ -415,4 +415,13 @@ def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
 # Entry point
 # ===========================================================================
 if __name__ == "__main__":
-    mcp.run()
+    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+    port      = int(os.getenv("PORT", "8000"))
+
+    if transport in ("streamable-http", "sse"):
+        # Container / remote mode — binds to all interfaces so the host can
+        # reach it.  Set MCP_TRANSPORT=streamable-http (recommended) or sse.
+        mcp.run(transport=transport, host="0.0.0.0", port=port)
+    else:
+        # Local stdio mode — default for desktop AI clients.
+        mcp.run()

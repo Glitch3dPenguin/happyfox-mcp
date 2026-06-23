@@ -1,2 +1,2 @@
-mcp==1.28.0
-requests>=2.32.0
+mcp[cli]>=1.0.0
+requests>=2.31.0
