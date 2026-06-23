@@ -6,8 +6,14 @@ from mcp.server.fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
 # Server init
+# host/port are set here so FastMCP's uvicorn runner picks them up correctly.
+# These args live on the constructor, NOT on .run() — that's the API contract.
 # ---------------------------------------------------------------------------
-mcp = FastMCP("HappyFox")
+_transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+_host      = "0.0.0.0" if _transport in ("streamable-http", "sse") else "127.0.0.1"
+_port      = int(os.getenv("PORT", "8000"))
+
+mcp = FastMCP("HappyFox", host=_host, port=_port)
 
 # ---------------------------------------------------------------------------
 # Configuration (from environment variables)
@@ -415,13 +421,6 @@ def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
 # Entry point
 # ===========================================================================
 if __name__ == "__main__":
-    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
-    port      = int(os.getenv("PORT", "8000"))
-
-    if transport in ("streamable-http", "sse"):
-        # Container / remote mode — binds to all interfaces so the host can
-        # reach it.  Set MCP_TRANSPORT=streamable-http (recommended) or sse.
-        mcp.run(transport=transport, host="0.0.0.0", port=port)
-    else:
-        # Local stdio mode — default for desktop AI clients.
-        mcp.run()
+    # host/port were already passed to the FastMCP() constructor above.
+    # .run() only accepts 'transport' — host/port here would raise TypeError.
+    mcp.run(transport=_transport)
