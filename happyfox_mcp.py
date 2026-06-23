@@ -1,6 +1,5 @@
 import os
-import json
-import textwrap
+import re
 import requests
 from mcp.server.fastmcp import FastMCP
 
@@ -44,56 +43,71 @@ def _truncate(text: str, max_chars: int = 300) -> str:
         return text
     return text[:max_chars] + f"… [truncated – {len(text) - max_chars} more chars]"
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags from a string."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
 # ===========================================================================
 # READ TOOLS
 # ===========================================================================
 
 @mcp.tool()
 def list_tickets(
-    status: str = "_pending",
-    query:  str = "",
-    page:   int = 1,
-    size:   int = 20,
+    status:      str = "_pending",
+    query:       str = "",
+    page:        int = 1,
+    size:        int = 20,
+    category_id: int = None,
 ) -> str:
     """
-    Return a compact, agent-friendly summary of tickets – titles and key
-    metadata ONLY.  No message bodies are included so this never blows out
+    Return a compact, agent-friendly summary of tickets — titles and key
+    metadata ONLY. No message bodies are included so this never blows out
     a context window.
 
     Use get_ticket_details() or get_ticket_messages() to drill into a
     specific ticket once you have its ID.
 
     Args:
-        status: '_pending' (default), '_all', '_completed', or a numeric
-                status ID string.  Use list_statuses() to see valid values.
-        query:  Optional HappyFox search string (same syntax as the UI).
-        page:   Page number (1-based).
-        size:   Tickets per page (1-50, default 20).
+        status:      '_pending' (default), '_all', '_completed', or a numeric
+                     status ID string. Use list_statuses() to see valid values.
+        query:       Optional HappyFox search string (same syntax as the UI).
+        page:        Page number (1-based).
+        size:        Tickets per page (1-50, default 20).
+        category_id: Optional category ID to filter results. Use
+                     list_categories() to find valid IDs.
     """
-    url = f"{BASE_URL}/tickets/"
+    url    = f"{BASE_URL}/tickets/"
     params = {
         "status": status,
         "q":      query,
         "page":   page,
         "size":   min(size, 50),
-        # Note: HappyFox ignores the 'fields' param on most accounts, so we
-        # receive the full response and manually extract only what we need
-        # before returning – keeping agent output compact regardless.
     }
+    # HappyFox accepts ?category=<id> to filter by a single category.
+    if category_id is not None:
+        params["category"] = category_id
+
     r = requests.get(url, auth=_auth(), params=params)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
-    data = r.json()
+    data      = r.json()
     page_info = data.get("page_info", {})
     tickets   = data.get("data", [])
 
     if not tickets:
         return "No tickets found matching those criteria."
 
-    lines = [
+    # Header line — include category filter hint if one was applied
+    header = (
         f"Tickets (page {page}/{page_info.get('page_count', '?')}, "
-        f"total: {page_info.get('count', '?')})",
+        f"total: {page_info.get('count', '?')})"
+    )
+    if category_id is not None:
+        header += f"  [category id={category_id}]"
+
+    lines = [
+        header,
         "",
         f"{'ID':<8} {'Display ID':<14} {'Status':<14} {'Priority':<10} "
         f"{'Assignee':<20} {'Subject'}",
@@ -104,15 +118,20 @@ def list_tickets(
         tid        = t.get("id", "")
         display_id = t.get("display_id", "")
         subject    = t.get("subject", "(no subject)")
-        status_nm  = t.get("status", {}).get("name", "?") if isinstance(t.get("status"), dict) else str(t.get("status", ""))
-        priority   = t.get("priority", {}).get("name", "?") if isinstance(t.get("priority"), dict) else ""
-        assignee   = ""
+        status_nm  = (
+            t.get("status", {}).get("name", "?")
+            if isinstance(t.get("status"), dict)
+            else str(t.get("status", ""))
+        )
+        priority = (
+            t.get("priority", {}).get("name", "?")
+            if isinstance(t.get("priority"), dict)
+            else ""
+        )
+        assignee = "Unassigned"
         if isinstance(t.get("assigned_to"), dict):
             assignee = t["assigned_to"].get("name", "Unassigned")
-        elif t.get("assigned_to") is None:
-            assignee = "Unassigned"
 
-        # Truncate long subjects so the table stays readable
         short_subject = subject if len(subject) <= 55 else subject[:52] + "..."
 
         lines.append(
@@ -122,9 +141,11 @@ def list_tickets(
 
     lines += [
         "",
-        f"Use get_ticket_details(ticket_id) to read a specific ticket.",
-        f"Use list_tickets(page={page+1}) to see the next page." if page_info.get("page_count", 1) > page else "",
+        "Use get_ticket_details(ticket_id) to read a specific ticket.",
     ]
+    if page_info.get("page_count", 1) > page:
+        lines.append(f"Use list_tickets(page={page + 1}) to see the next page.")
+
     return "\n".join(lines)
 
 
@@ -140,9 +161,8 @@ def get_ticket_details(ticket_id: int) -> str:
     Args:
         ticket_id: The numeric ticket ID (the 'id' column from list_tickets).
     """
-    # NOTE: singular /ticket/ not /tickets/  ← this was the bug in v1
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth())
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -156,15 +176,15 @@ def get_ticket_details(ticket_id: int) -> str:
         "=" * 60,
         f"Ticket #{ticket_id}  {t.get('display_id', '')}",
         "=" * 60,
-        f"Subject   : {t.get('subject', '(no subject)')}",
-        f"Status    : {t.get('status', {}).get('name', '?')}  (id={t.get('status', {}).get('id', '?')})",
-        f"Priority  : {t.get('priority', {}).get('name', '?')}  (id={t.get('priority', {}).get('id', '?')})",
-        f"Category  : {t.get('category', {}).get('name', '?')}  (id={t.get('category', {}).get('id', '?')})",
-        f"Assignee  : {assignee}",
-        f"Contact   : {t.get('user', {}).get('name', '?')} <{t.get('user', {}).get('email', '?')}>",
-        f"Created   : {t.get('created_at', '?')}",
-        f"Updated   : {t.get('last_updated_at', '?')}",
-        f"Messages  : {t.get('messages_count', 0)}  (use get_ticket_messages to read them)",
+        f"Subject    : {t.get('subject', '(no subject)')}",
+        f"Status     : {t.get('status', {}).get('name', '?')}  (id={t.get('status', {}).get('id', '?')})",
+        f"Priority   : {t.get('priority', {}).get('name', '?')}  (id={t.get('priority', {}).get('id', '?')})",
+        f"Category   : {t.get('category', {}).get('name', '?')}  (id={t.get('category', {}).get('id', '?')})",
+        f"Assignee   : {assignee}",
+        f"Contact    : {t.get('user', {}).get('name', '?')} <{t.get('user', {}).get('email', '?')}>",
+        f"Created    : {t.get('created_at', '?')}",
+        f"Updated    : {t.get('last_updated_at', '?')}",
+        f"Messages   : {t.get('messages_count', 0)}  (use get_ticket_messages to read them)",
         f"Attachments: {t.get('attachments_count', 0)}",
         "",
         "--- Opening Message ---",
@@ -178,18 +198,17 @@ def get_ticket_details(ticket_id: int) -> str:
 @mcp.tool()
 def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
     """
-    Return the conversation thread for a ticket – the most recent N messages.
+    Return the conversation thread for a ticket — the most recent N messages.
 
-    Each message is shown in full (not truncated) so you can draft replies
-    with full context.  Keep max_messages small to avoid filling the context
-    window.
+    Each message body is returned in full so you can draft replies with full
+    context. Keep max_messages small to avoid filling the context window.
 
     Args:
         ticket_id:    Numeric ticket ID.
         max_messages: How many of the most-recent updates to return (default 5).
     """
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth())
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -199,7 +218,6 @@ def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
     if not updates:
         return f"Ticket #{ticket_id} has no message updates yet."
 
-    # Most-recent first, then slice
     recent = updates[-max_messages:]
 
     lines = [
@@ -208,16 +226,15 @@ def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
         "",
     ]
     for i, upd in enumerate(recent, 1):
-        by      = upd.get("by", {})
-        author  = f"{by.get('name', '?')} ({by.get('type', '?')})"
-        ts      = upd.get("timestamp", "?")
-        msg     = upd.get("message", {})
-        body    = msg.get("text") or msg.get("html") or "(no body)"
-
-        # Strip HTML tags crudely if html-only
-        if msg.get("html") and not msg.get("text"):
-            import re
-            body = re.sub(r"<[^>]+>", "", body).strip()
+        by     = upd.get("by", {})
+        author = f"{by.get('name', '?')} ({by.get('type', '?')})"
+        ts     = upd.get("timestamp", "?")
+        msg    = upd.get("message", {})
+        body   = msg.get("text") or ""
+        if not body and msg.get("html"):
+            body = _strip_html(msg["html"])
+        if not body:
+            body = "(no body)"
 
         lines += [
             f"[{i}] {ts}  —  {author}",
@@ -234,17 +251,39 @@ def list_statuses() -> str:
     List all ticket statuses configured in HappyFox with their IDs.
 
     Use the status ID when closing a ticket or changing its status via
-    add_ticket_update().
+    change_ticket_status() or add_ticket_update().
     """
     r = requests.get(f"{BASE_URL}/statuses/", auth=_auth())
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
     statuses = r.json()
-    lines = ["Available Statuses:", ""]
+    lines    = ["Available Statuses:", ""]
     for s in statuses:
         lines.append(
-            f"  id={s['id']:<4}  behavior={s.get('behavior','?'):<12}  name={s['name']}"
+            f"  id={s['id']:<4}  behavior={s.get('behavior', '?'):<12}  name={s['name']}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_categories() -> str:
+    """
+    List all ticket categories configured in HappyFox with their IDs.
+
+    Use the category ID with list_tickets(category_id=...) to filter the
+    ticket queue to a specific category, or with create_ticket() to file
+    a ticket under the right category.
+    """
+    r = requests.get(f"{BASE_URL}/categories/", auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
+
+    categories = r.json()
+    lines      = ["Available Categories:", ""]
+    for c in categories:
+        lines.append(
+            f"  id={c['id']:<4}  name={c.get('name', '?')}"
         )
     return "\n".join(lines)
 
@@ -254,7 +293,8 @@ def list_staff() -> str:
     """
     List all staff/agents with their IDs.
 
-    The staff ID is required when posting updates or private notes.
+    The staff ID is required when posting updates, private notes, or
+    changing ticket status.
     """
     r = requests.get(f"{BASE_URL}/staff/", auth=_auth())
     if r.status_code != 200:
@@ -264,7 +304,9 @@ def list_staff() -> str:
     lines = ["Staff / Agents:", ""]
     for s in staff:
         active = "active" if s.get("active") else "inactive"
-        lines.append(f"  id={s['id']:<4}  {active:<8}  {s.get('name','?')}  <{s.get('email','?')}>")
+        lines.append(
+            f"  id={s['id']:<4}  {active:<8}  {s.get('name', '?')}  <{s.get('email', '?')}>"
+        )
     return "\n".join(lines)
 
 
@@ -285,7 +327,7 @@ def add_ticket_update(
     Post a reply or private note to a ticket.
 
     IMPORTANT: Always show the exact message text to the user and get their
-    explicit approval before calling this tool.  Replies are sent immediately
+    explicit approval before calling this tool. Replies are sent immediately
     and cannot be unsent.
 
     Args:
@@ -293,13 +335,12 @@ def add_ticket_update(
         message:        The reply or note body (plain text).
         staff_id:       ID of the staff member posting the update (from list_staff).
         is_private:     If True, posts as a private internal note (not sent to
-                        the contact).  Default False (public reply).
+                        the contact). Default False (public reply).
         status_id:      Optional status ID to set at the same time (e.g. to
-                        close the ticket).  Use list_statuses() to find IDs.
-        notify_contact: Whether to email the contact.  Ignored for private notes.
+                        close the ticket). Use list_statuses() to find IDs.
+        notify_contact: Whether to email the contact. Ignored for private notes.
     """
     if is_private:
-        # NOTE: correct endpoint is staff_pvtnote, NOT staff_private_note ← was the v1 bug
         endpoint = f"{BASE_URL}/ticket/{ticket_id}/staff_pvtnote/"
         payload  = {
             "staff":     staff_id,
@@ -318,7 +359,7 @@ def add_ticket_update(
 
     r = requests.post(endpoint, auth=_auth(), json=payload)
     if r.status_code in (200, 201):
-        kind = "Private note" if is_private else "Reply"
+        kind   = "Private note" if is_private else "Reply"
         result = f"{kind} posted successfully to ticket #{ticket_id}."
         if status_id is not None:
             result += f"  Status changed to id={status_id}."
@@ -347,14 +388,14 @@ def create_ticket(
         message:       Opening message body (plain text).
         contact_name:  Name of the contact the ticket is for.
         contact_email: Email address of the contact.
-        category_id:   HappyFox category ID (use list_categories if unsure).
+        category_id:   HappyFox category ID (use list_categories() to find IDs).
         priority_id:   Optional priority ID.
-        assignee_id:   Optional staff ID to assign immediately.
+        assignee_id:   Optional staff ID to assign immediately (from list_staff).
     """
     url     = f"{BASE_URL}/tickets/"
     payload = {
         "subject":  subject,
-        "text":     message,   # NOTE: field is 'text', not 'message'  ← v1 bug
+        "text":     message,
         "name":     contact_name,
         "email":    contact_email,
         "category": category_id,
@@ -380,8 +421,7 @@ def rename_ticket(ticket_id: int, new_subject: str, staff_id: int) -> str:
     Rename a ticket's subject/title.
 
     Useful when the original subject is vague (e.g. 'Help!', 'Question') and
-    makes it hard for an agent or AI to know what the ticket is about at a
-    glance.
+    makes it hard for an agent or AI to triage the queue at a glance.
 
     IMPORTANT: Confirm the new title with the user before calling this.
 
@@ -390,7 +430,6 @@ def rename_ticket(ticket_id: int, new_subject: str, staff_id: int) -> str:
         new_subject: The new subject / title to set.
         staff_id:    ID of the staff member making the change (from list_staff).
     """
-    # The staff_update endpoint accepts a 'subject' field to change the ticket title.
     url     = f"{BASE_URL}/ticket/{ticket_id}/staff_update/"
     payload = {
         "staff":   staff_id,
@@ -430,5 +469,5 @@ def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
 # ===========================================================================
 if __name__ == "__main__":
     # host/port were already passed to the FastMCP() constructor above.
-    # .run() only accepts 'transport' — host/port here would raise TypeError.
+    # .run() only accepts 'transport' — passing host/port here raises TypeError.
     mcp.run(transport=_transport)
