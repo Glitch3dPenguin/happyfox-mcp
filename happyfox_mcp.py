@@ -13,7 +13,15 @@ _transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
 _host      = "0.0.0.0" if _transport in ("streamable-http", "sse") else "127.0.0.1"
 _port      = int(os.getenv("PORT", "8000"))
 
-mcp = FastMCP("HappyFox", host=_host, port=_port)
+mcp = FastMCP(
+    "HappyFox",
+    host=_host,
+    port=_port,
+    # Serve at root so clients can connect to http://host:8000/
+    # without needing to know the /mcp subpath FastMCP defaults to.
+    streamable_http_path="/",
+    sse_path="/sse",
+)
 
 # ---------------------------------------------------------------------------
 # Configuration (from environment variables)
