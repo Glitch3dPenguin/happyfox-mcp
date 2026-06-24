@@ -425,15 +425,39 @@ def rename_ticket(ticket_id: int, new_subject: str, staff_id: int) -> str:
 
     IMPORTANT: Confirm the new title with the user before calling this.
 
+    How it works: The HappyFox v1.1 API does not have a dedicated
+    "rename ticket" endpoint. The 'subject' field on staff_update changes
+    the outgoing email reply subject, not the ticket title, and sending it
+    alone returns a 400 "Nothing to update" error.
+
+    Workaround: fetch the ticket's current status, then re-submit that same
+    status alongside the new subject. This gives the API a genuine property
+    change to commit, which causes it to also apply the subject rename.
+
     Args:
         ticket_id:   Numeric ticket ID.
         new_subject: The new subject / title to set.
         staff_id:    ID of the staff member making the change (from list_staff).
     """
+    # Step 1 — fetch the current ticket so we know its status ID.
+    detail = requests.get(f"{BASE_URL}/ticket/{ticket_id}/", auth=_auth())
+    if detail.status_code != 200:
+        return f"Error fetching ticket {ticket_id}: {detail.status_code} {detail.text}"
+
+    ticket_data = detail.json()
+    current_status_id = ticket_data.get("status", {}).get("id")
+    if not current_status_id:
+        return "Error: could not determine current ticket status — cannot proceed with rename."
+
+    # Step 2 — submit staff_update with subject + current status.
+    # Re-asserting the same status gives the API a valid "change" to commit,
+    # which causes it to also apply the subject field instead of returning
+    # the 400 "Nothing to update" error.
     url     = f"{BASE_URL}/ticket/{ticket_id}/staff_update/"
     payload = {
         "staff":   staff_id,
         "subject": new_subject,
+        "status":  current_status_id,
     }
     r = requests.post(url, auth=_auth(), json=payload)
     if r.status_code in (200, 201):
