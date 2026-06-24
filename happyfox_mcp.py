@@ -416,52 +416,47 @@ def create_ticket(
 
 
 @mcp.tool()
-def rename_ticket(ticket_id: int, new_subject: str, staff_id: int) -> str:
+def suggest_ticket_rename(ticket_id: int, suggested_subject: str, staff_id: int) -> str:
     """
-    Rename a ticket's subject/title.
+    Flag a ticket for renaming by posting a private internal note with the
+    suggested new title.
 
-    Useful when the original subject is vague (e.g. 'Help!', 'Question') and
-    makes it hard for an agent or AI to triage the queue at a glance.
+    The HappyFox v1.1 API does not expose ticket subject editing — the
+    'subject' field on staff_update only controls the outgoing email reply
+    subject line, not the ticket title, and returns a 400 error when used
+    alone. This is a confirmed hard limitation of the API (the edit_subject
+    permission exists in HappyFox but is only accessible through the UI).
 
-    IMPORTANT: Confirm the new title with the user before calling this.
+    This tool posts a clearly-formatted private note instead. The note is
+    visible to agents when they open the ticket, so they can apply the rename
+    manually in two clicks. The note is never shown to the contact.
 
-    How it works: The HappyFox v1.1 API does not have a dedicated
-    "rename ticket" endpoint. The 'subject' field on staff_update changes
-    the outgoing email reply subject, not the ticket title, and sending it
-    alone returns a 400 "Nothing to update" error.
-
-    Workaround: fetch the ticket's current status, then re-submit that same
-    status alongside the new subject. This gives the API a genuine property
-    change to commit, which causes it to also apply the subject rename.
+    IMPORTANT: Confirm the suggested title with the user before calling this.
 
     Args:
-        ticket_id:   Numeric ticket ID.
-        new_subject: The new subject / title to set.
-        staff_id:    ID of the staff member making the change (from list_staff).
+        ticket_id:         Numeric ticket ID.
+        suggested_subject: The recommended new subject / title.
+        staff_id:          ID of the staff member posting the note (from list_staff).
     """
-    # Step 1 — fetch the current ticket so we know its status ID.
-    detail = requests.get(f"{BASE_URL}/ticket/{ticket_id}/", auth=_auth())
-    if detail.status_code != 200:
-        return f"Error fetching ticket {ticket_id}: {detail.status_code} {detail.text}"
-
-    ticket_data = detail.json()
-    current_status_id = ticket_data.get("status", {}).get("id")
-    if not current_status_id:
-        return "Error: could not determine current ticket status — cannot proceed with rename."
-
-    # Step 2 — submit staff_update with subject + current status.
-    # Re-asserting the same status gives the API a valid "change" to commit,
-    # which causes it to also apply the subject field instead of returning
-    # the 400 "Nothing to update" error.
-    url     = f"{BASE_URL}/ticket/{ticket_id}/staff_update/"
+    note = (
+        f"[AI TITLE SUGGESTION]\n"
+        f"Suggested title: {suggested_subject}\n\n"
+        f"The original subject was unclear. Please rename this ticket manually "
+        f"in HappyFox if the suggested title is accurate."
+    )
+    url     = f"{BASE_URL}/ticket/{ticket_id}/staff_pvtnote/"
     payload = {
-        "staff":   staff_id,
-        "subject": new_subject,
-        "status":  current_status_id,
+        "staff":     staff_id,
+        "plaintext": note,
     }
     r = requests.post(url, auth=_auth(), json=payload)
     if r.status_code in (200, 201):
-        return f"Ticket #{ticket_id} subject updated to: \"{new_subject}\""
+        return (
+            f"Private note posted to ticket #{ticket_id} with suggested title: "
+            f"\"{suggested_subject}\"\n"
+            f"Note: The HappyFox API does not support renaming ticket titles directly. "
+            f"An agent will need to apply the rename manually via the UI."
+        )
     return f"Error {r.status_code}: {r.text}"
 
 
