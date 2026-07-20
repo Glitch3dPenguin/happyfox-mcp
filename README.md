@@ -10,6 +10,7 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 
 - **Context-safe ticket listing** — compact summary table (ID, status, priority, assignee, subject). No message bodies in list output.
 - **On-demand detail fetching** — pull metadata or the full message thread for a single ticket when you need it.
+- **Attachment viewing & downloading** — list attachments on tickets and download images/documents to local storage.
 - **Status management** — change ticket status, close tickets, look up all available statuses by ID.
 - **Draft → confirm pattern** — write tools are designed to be confirmed by the user before posting.
 - **Ticket renaming** — let an agent retitle vague subjects like "Help!!" to something meaningful.
