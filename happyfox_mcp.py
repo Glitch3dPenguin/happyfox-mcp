@@ -196,25 +196,29 @@ def download_attachment(attachment_id: int, output_path: str = None) -> str:
     Returns:
         Confirmation message with filename, size, and saved location.
     """
-    # Fetch attachment metadata first
+    # First, try to retrieve the attachment metadata so we can get the pre-signed
+    # S3 download URL (HappyFox serves attachments through signed URLs).
     status_code, data = _happyfox_get(f"/attachment/{attachment_id}")
 
-    if status_code != 200:
+    filename = "attachment"
+    mime_type = "application/octet-stream"
+    download_url = None
+
+    if status_code == 200 and isinstance(data, dict):
+        filename   = data.get("filename", "attachment")
+        mime_type  = data.get("mime_type", "application/octet-stream") or "application/octet-stream"
+        # The HappyFox API returns a download_url on the attachment object itself.
+        download_url = data.get("download_url")
+
+    if not download_url:
         return (f"Error {status_code}: Failed to fetch attachment metadata\n"
                 f"URL tried: {BASE_URL}/attachment/{attachment_id}\n{data.get('error', '')}")
 
-    att = data
-    filename = att.get("filename", "attachment")
-    mime_type = att.get("mime_type", "application/octet-stream")
-
-    # Build the download URL — HappyFox serves attachments via a specific endpoint
-    download_url = f"https://{HAPPYFOX_DOMAIN}/api/1.1/json/attachment/{attachment_id}/content"
-
     try:
-        r = requests.get(download_url, auth=_auth(), stream=True, timeout=60)
+        r = requests.get(download_url, stream=True, timeout=60)
         if r.status_code != 200:
             return (f"Error {r.status_code}: Failed to download attachment\n"
-                    f"URL tried: {download_url}\n{r.text}")
+                    f"URL tried: {download_url[:300]}\n{r.text}")
 
         # Determine output path
         if not output_path:
