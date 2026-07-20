@@ -1,22 +1,10 @@
 import os
 import re
-import json
-import logging
-from typing import Optional
-from contextlib import asynccontextmanager
-from mcp.server.fastmcp import FastMCP
-
-# ---------------------------------------------------------------------------
-# Logging setup — suppress noisy ClientDisconnect / Starlette warnings so the
-# server logs stay clean for operators.
-# ---------------------------------------------------------------------------
-logging.getLogger("mcp.server.streamable_http").setLevel(logging.INFO)
-logging.getLogger("starlette.requests").setLevel(logging.WARNING)
+import requests
+from mcp.server.fastmcp import FastMCP, Image
 
 # ---------------------------------------------------------------------------
 # Server init
-# host/port are set here so FastMCP's uvicorn runner picks them up correctly.
-# These args live on the constructor, NOT on .run() — that's the API contract.
 # ---------------------------------------------------------------------------
 _transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
 _host      = "0.0.0.0" if _transport in ("streamable-http", "sse") else "127.0.0.1"
@@ -26,210 +14,73 @@ mcp = FastMCP(
     "HappyFox",
     host=_host,
     port=_port,
-    # Serve at root so clients can connect to http://host:8000/
-    # without needing to know the /mcp subpath FastMCP defaults to.
     streamable_http_path="/",
     sse_path="/sse",
 )
 
 # ---------------------------------------------------------------------------
-# Configuration (from environment variables)
+# Configuration
 # ---------------------------------------------------------------------------
-HAPPYFOX_DOMAIN = os.getenv("HAPPYFOX_DOMAIN")   # e.g. "acme.happyfox.com"
+HAPPYFOX_DOMAIN = os.getenv("HAPPYFOX_DOMAIN")
 API_KEY         = os.getenv("HAPPYFOX_API_KEY")
 AUTH_CODE       = os.getenv("HAPPYFOX_AUTH_CODE")
 BASE_URL        = f"https://{HAPPYFOX_DOMAIN}/api/1.1/json"
 
 def _auth():
-    """Basic-auth tuple expected by every HappyFox request."""
     return (API_KEY, AUTH_CODE)
 
 def _truncate(text: str, max_chars: int = 300) -> str:
-    """Return text truncated to max_chars with an ellipsis note if cut."""
     if not text:
         return "(empty)"
     text = text.strip()
     if len(text) <= max_chars:
         return text
-    return text[:max_chars] + f"… [truncated – {len(text) - max_chars} more chars]"
+    return text[:max_chars] + f"... [truncated - {len(text) - max_chars} more chars]"
 
 def _strip_html(text: str) -> str:
-    """Strip HTML tags from a string."""
     return re.sub(r"<[^>]+>", "", text).strip()
 
+def _fmt_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
 
-# ===========================================================================
-# HAPPYFOX API HELPERS (centralized request logic with retry + timeout)
-# ===========================================================================
-import requests
+def _collect_attachments(ticket_data: dict) -> list:
+    """Collect all attachments from all parts of a ticket response."""
+    all_attachments = []
+    seen_ids = set()
 
-def _happyfox_get(path: str, params: dict = None) -> tuple[int, dict]:
-    """GET a HappyFox endpoint; returns (status_code, parsed_json)."""
-    url = f"{BASE_URL}{path}"
-    try:
-        r = requests.get(url, auth=_auth(), params=params, timeout=30)
-        if r.status_code != 200:
-            return r.status_code, {"error": r.text}
-        return 200, r.json()
-    except requests.exceptions.Timeout:
-        return 504, {"error": "HappyFox API request timed out"}
-    except requests.exceptions.ConnectionError as e:
-        return 502, {"error": f"Connection error: {str(e)[:200]}"}
+    def add(a, source):
+        aid = a.get("id")
+        if aid not in seen_ids:
+            seen_ids.add(aid)
+            all_attachments.append({**a, "_source": source})
 
+    # Opening message
+    first_msg = ticket_data.get("first_message", {})
+    if isinstance(first_msg, dict):
+        for a in first_msg.get("attachments", []):
+            add(a, "Opening message")
+    # Top-level fallback (some API versions put them here)
+    for a in ticket_data.get("attachments", []):
+        add(a, "Opening message")
 
-def _happyfox_post(path: str, payload: dict) -> tuple[int, Optional[dict]]:
-    """POST to a HappyFox endpoint; returns (status_code, parsed_json|None)."""
-    url = f"{BASE_URL}{path}"
-    try:
-        r = requests.post(url, auth=_auth(), json=payload, timeout=30)
-        if r.status_code in (200, 201):
-            return r.status_code, r.json()
-        return r.status_code, {"error": r.text}
-    except requests.exceptions.Timeout:
-        return 504, {"error": "HappyFox API request timed out"}
-    except requests.exceptions.ConnectionError as e:
-        return 502, {"error": f"Connection error: {str(e)[:200]}"}
+    # Updates / replies
+    for idx, upd in enumerate(ticket_data.get("updates", []), 1):
+        ts  = upd.get("timestamp", f"update #{idx}")
+        msg = upd.get("message", {}) or {}
+        for a in list(msg.get("attachments") or []) + list(upd.get("attachments") or []):
+            add(a, f"Reply {idx} ({ts})")
+
+    return all_attachments
 
 
 # ===========================================================================
 # READ TOOLS
 # ===========================================================================
-
-@mcp.tool()
-def get_ticket_attachments(ticket_id: int) -> str:
-    """
-    List all attachments on a ticket with download URLs.
-
-    Returns metadata about all attachments (images, documents, etc.) associated
-    with a specific ticket. For each attachment, provides the filename, size,
-    MIME type, and a URL to download the actual file content.
-
-    IMPORTANT: The returned data includes metadata only, not the actual file
-    content. Use download_attachment() to fetch the full file data.
-
-    Args:
-        ticket_id: Numeric ticket ID (from list_tickets).
-    """
-    status_code, data = _happyfox_get(f"/ticket/{ticket_id}/")
-
-    if status_code != 200:
-        return f"Error {status_code}: Failed to fetch ticket data\n{data.get('error', '')}"
-
-    t = data
-    # Attachments can be in first_message.attachments or at top level
-    attachments = []
-
-    # Try first_message.first (singular) — HappyFox API quirk
-    fm_first = t.get("first_message", {}).get("first", {})
-    if fm_first:
-        attachments.extend(fm_first.get("attachments", []))
-
-    # Also check top-level attachment fields on the ticket object itself
-    for key in ("attachments", "attachment"):
-        val = t.get(key)
-        if isinstance(val, list):
-            attachments.extend(val)
-        elif isinstance(val, dict):
-            # Sometimes it's nested under a "first" key even at top level
-            inner = val.get("first", {})
-            if isinstance(inner, list):
-                attachments.extend(inner)
-
-    # Deduplicate by id
-    seen_ids = set()
-    unique_attachments = []
-    for att in attachments:
-        aid = att.get("id") or att.get("attachment_id")
-        if aid and aid not in seen_ids:
-            seen_ids.add(aid)
-            unique_attachments.append(att)
-
-    if not unique_attachments:
-        return f"Ticket #{ticket_id} has no attachments."
-
-    lines = [f"Attachments for Ticket #{ticket_id}:", ""]
-
-    for att in unique_attachments:
-        filename = att.get("filename", "unknown")
-        size_kb  = att.get("size", 0) / 1024 if att.get("size") else 0
-        mime_type = att.get("mime_type", "unknown")
-        aid = att.get("id") or att.get("attachment_id", "")
-
-        # Build the HappyFox download URL for this attachment
-        download_url = f"https://{HAPPYFOX_DOMAIN}/api/1.1/json/attachment/{aid}"
-
-        lines.append(f"  {filename}")
-        lines.append(f"    Size:   {size_kb:.1f} KB")
-        lines.append(f"    Type:   {mime_type}")
-        lines.append(f"    URL:    {download_url}")
-        lines.append(f"    ID:     {aid}")
-        lines.append(f"    Use download_attachment() to save locally.")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def download_attachment(attachment_id: int, output_path: str = None) -> str:
-    """
-    Download an attachment from HappyFox and save it to a local file.
-
-    Fetches the actual binary content of an attachment using its ID and saves
-    it to the specified path (or /mnt/uploads/ if no path is given). Returns
-    confirmation with file size and location.
-
-    Args:
-        attachment_id: Numeric attachment ID (from get_ticket_attachments or
-                       list_tickets output showing attachment count).
-        output_path:   Optional full filesystem path where to save the file.
-
-    Returns:
-        Confirmation message with filename, size, and saved location.
-    """
-    # Fetch attachment metadata first
-    status_code, data = _happyfox_get(f"/attachment/{attachment_id}")
-
-    if status_code != 200:
-        return (f"Error {status_code}: Failed to fetch attachment metadata\n"
-                f"URL tried: {BASE_URL}/attachment/{attachment_id}\n{data.get('error', '')}")
-
-    att = data
-    filename = att.get("filename", "attachment")
-    mime_type = att.get("mime_type", "application/octet-stream")
-
-    # Build the download URL — HappyFox serves attachments via a specific endpoint
-    download_url = f"https://{HAPPYFOX_DOMAIN}/api/1.1/json/attachment/{attachment_id}/content"
-
-    try:
-        r = requests.get(download_url, auth=_auth(), stream=True, timeout=60)
-        if r.status_code != 200:
-            return (f"Error {r.status_code}: Failed to download attachment\n"
-                    f"URL tried: {download_url}\n{r.text}")
-
-        # Determine output path
-        if not output_path:
-            os.makedirs("/mnt/uploads", exist_ok=True)
-            output_path = f"/mnt/uploads/{filename}"
-
-        # Save file to disk
-        with open(output_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-        size_kb = os.path.getsize(output_path) / 1024
-
-        return (f"✅ Attachment downloaded successfully!\n\n"
-                f"**Filename:** {filename}\n"
-                f"**Size:**     {size_kb:.1f} KB\n"
-                f"**Type:**     {mime_type}\n"
-                f"**Saved to:** {output_path}")
-
-    except requests.exceptions.Timeout:
-        return "Error: Attachment download timed out. The file may be too large."
-    except Exception as e:
-        return f"Error downloading attachment: {str(e)}"
-
 
 @mcp.tool()
 def list_tickets(
@@ -240,115 +91,97 @@ def list_tickets(
     category_id: int = None,
 ) -> str:
     """
-    Return a compact, agent-friendly summary of tickets — titles and key
-    metadata ONLY. No message bodies are included so this never blows out
-    a context window.
+    Return a compact, agent-friendly summary of tickets - titles and key
+    metadata ONLY. No message bodies included so this never blows out context.
 
-    Use get_ticket_details() or get_ticket_messages() to drill into a
-    specific ticket once you have its ID.
+    Use get_ticket_details() or get_ticket_messages() to drill into a ticket.
+    Use get_ticket_attachments() to list files on a ticket.
 
     Args:
         status:      '_pending' (default), '_all', '_completed', or a numeric
-                     status ID string. Use list_statuses() to see valid values.
-        query:       Optional HappyFox search string (same syntax as the UI).
+                     status ID. Use list_statuses() to see valid values.
+        query:       Optional HappyFox search string.
         page:        Page number (1-based).
         size:        Tickets per page (1-50, default 20).
-        category_id: Optional category ID to filter results. Use
-                     list_categories() to find valid IDs.
+        category_id: Optional category ID to filter. Use list_categories() for IDs.
     """
     url    = f"{BASE_URL}/tickets/"
-    params = {
-        "status": status,
-        "q":      query,
-        "page":   page,
-        "size":   min(size, 50),
-    }
-    # HappyFox accepts ?category=<id> to filter by a single category.
+    params = {"status": status, "q": query, "page": page, "size": min(size, 50)}
     if category_id is not None:
         params["category"] = category_id
 
-    status_code, data = _happyfox_get("/tickets/", params=params)
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
+    r = requests.get(url, auth=_auth(), params=params)
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
 
+    data      = r.json()
     page_info = data.get("page_info", {})
     tickets   = data.get("data", [])
 
     if not tickets:
         return "No tickets found matching those criteria."
 
-    # Header line — include category filter hint if one was applied
-    header = (
-        f"Tickets (page {page}/{page_info.get('page_count', '?')}, "
-        f"total: {page_info.get('count', '?')})"
-    )
+    header = (f"Tickets (page {page}/{page_info.get('page_count', '?')}, "
+              f"total: {page_info.get('count', '?')})")
     if category_id is not None:
         header += f"  [category id={category_id}]"
 
     lines = [
-        header,
-        "",
-        f"{'ID':<8} {'Display ID':<14} {'Status':<14} {'Priority':<10} "
-        f"{'Assignee':<20} {'Subject'}",
-        "-" * 100,
+        header, "",
+        f"{'ID':<8} {'Display ID':<14} {'Status':<14} {'Priority':<10} {'Attach':<7} {'Assignee':<20} {'Subject'}",
+        "-" * 108,
     ]
 
     for t in tickets:
         tid        = t.get("id", "")
         display_id = t.get("display_id", "")
         subject    = t.get("subject", "(no subject)")
-        status_nm  = (
-            t.get("status", {}).get("name", "?")
-            if isinstance(t.get("status"), dict)
-            else str(t.get("status", ""))
-        )
-        priority = (
-            t.get("priority", {}).get("name", "?")
-            if isinstance(t.get("priority"), dict)
-            else ""
-        )
-        assignee = "Unassigned"
+        status_nm  = (t.get("status", {}).get("name", "?")
+                      if isinstance(t.get("status"), dict) else str(t.get("status", "")))
+        priority   = (t.get("priority", {}).get("name", "?")
+                      if isinstance(t.get("priority"), dict) else "")
+        assignee   = "Unassigned"
         if isinstance(t.get("assigned_to"), dict):
             assignee = t["assigned_to"].get("name", "Unassigned")
-
-        short_subject = subject if len(subject) <= 55 else subject[:52] + "..."
+        attach_ct  = t.get("attachments_count", 0)
+        attach_col = f"{attach_ct} file" if attach_ct == 1 else (f"{attach_ct} files" if attach_ct else "")
+        short_subj = subject if len(subject) <= 48 else subject[:45] + "..."
 
         lines.append(
             f"{str(tid):<8} {display_id:<14} {status_nm:<14} {priority:<10} "
-            f"{assignee:<20} {short_subject}"
+            f"{attach_col:<7} {assignee:<20} {short_subj}"
         )
 
-    lines += [
-        "",
-        "Use get_ticket_details(ticket_id) to read a specific ticket.",
-    ]
+    lines += ["", "Use get_ticket_details(ticket_id) to read a specific ticket."]
     if page_info.get("page_count", 1) > page:
-        lines.append(f"Use list_tickets(page={page + 1}) to see the next page.")
-
+        lines.append(f"Use list_tickets(page={page + 1}) for the next page.")
     return "\n".join(lines)
 
 
 @mcp.tool()
 def get_ticket_details(ticket_id: int) -> str:
     """
-    Return structured metadata and the opening message for ONE ticket.
-    Message bodies are truncated to keep the response concise.
+    Return structured metadata and truncated opening message for ONE ticket.
 
-    Call get_ticket_messages(ticket_id) separately to read the full
-    conversation thread.
+    Call get_ticket_messages(ticket_id) for the full thread.
+    Call get_ticket_attachments(ticket_id) to list and download files.
 
     Args:
-        ticket_id: The numeric ticket ID (the 'id' column from list_tickets).
+        ticket_id: Numeric ticket ID (the 'id' column from list_tickets).
     """
-    status_code, data = _happyfox_get(f"/ticket/{ticket_id}/")
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r   = requests.get(url, auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
 
-    t = data
-
+    t        = r.json()
     assignee = "Unassigned"
     if isinstance(t.get("assigned_to"), dict):
         assignee = t["assigned_to"].get("name", "Unassigned")
+
+    attach_count = t.get("attachments_count", 0)
+    attach_hint  = (f"{attach_count}  (call get_ticket_attachments to list + download)"
+                    if attach_count > 0 else "0")
 
     lines = [
         "=" * 60,
@@ -362,13 +195,11 @@ def get_ticket_details(ticket_id: int) -> str:
         f"Contact    : {t.get('user', {}).get('name', '?')} <{t.get('user', {}).get('email', '?')}>",
         f"Created    : {t.get('created_at', '?')}",
         f"Updated    : {t.get('last_updated_at', '?')}",
-        f"Messages   : {t.get('messages_count', 0)}  (use get_ticket_messages to read them)",
-        f"Attachments: {t.get('attachments_count', 0)}",
+        f"Messages   : {t.get('messages_count', 0)}  (call get_ticket_messages to read)",
+        f"Attachments: {attach_hint}",
         "",
         "--- Opening Message ---",
         _truncate(t.get("first_message", ""), max_chars=600),
-        "",
-        "Tip: call get_ticket_messages(ticket_id) to read the full thread.",
     ]
     return "\n".join(lines)
 
@@ -376,28 +207,26 @@ def get_ticket_details(ticket_id: int) -> str:
 @mcp.tool()
 def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
     """
-    Return the conversation thread for a ticket — the most recent N messages.
+    Return the conversation thread for a ticket - the most recent N messages.
 
-    Each message body is returned in full so you can draft replies with full
-    context. Keep max_messages small to avoid filling the context window.
+    Attachment names are noted inline; use download_attachment() to fetch them.
 
     Args:
         ticket_id:    Numeric ticket ID.
         max_messages: How many of the most-recent updates to return (default 5).
     """
-    status_code, data = _happyfox_get(f"/ticket/{ticket_id}/")
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r   = requests.get(url, auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
 
-    t       = data
+    t       = r.json()
     updates = t.get("updates", [])
-
     if not updates:
         return f"Ticket #{ticket_id} has no message updates yet."
 
     recent = updates[-max_messages:]
-
-    lines = [
+    lines  = [
         f"Last {len(recent)} of {len(updates)} messages in ticket #{ticket_id} "
         f"({t.get('display_id', '')}): {t.get('subject', '')}",
         "",
@@ -413,82 +242,166 @@ def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
         if not body:
             body = "(no body)"
 
-        lines += [
-            f"[{i}] {ts}  —  {author}",
-            body.strip(),
-            "",
-        ]
+        attachments = list(msg.get("attachments") or []) + list(upd.get("attachments") or [])
+        attach_note = ""
+        if attachments:
+            names = ", ".join(f"{a.get('name','?')} (id={a.get('id','?')})" for a in attachments)
+            attach_note = f"\n  Attachments: {names}  -> call download_attachment({ticket_id}, <id>)"
+
+        lines += [f"[{i}] {ts}  -  {author}{attach_note}", body.strip(), ""]
 
     return "\n".join(lines)
 
 
 @mcp.tool()
+def get_ticket_attachments(ticket_id: int) -> str:
+    """
+    List ALL attachments on a ticket - from the opening message and every
+    reply - with IDs, sizes, types, and which message they came from.
+
+    Then call download_attachment(ticket_id, attachment_id) to fetch one.
+    Images are returned directly so the agent can view them.
+
+    Args:
+        ticket_id: Numeric ticket ID.
+    """
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r   = requests.get(url, auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
+
+    t               = r.json()
+    all_attachments = _collect_attachments(t)
+
+    if not all_attachments:
+        return (f"Ticket #{ticket_id} ({t.get('display_id', '')}) has no attachments.\n"
+                f"(attachments_count from API: {t.get('attachments_count', 0)})")
+
+    lines = [
+        f"Attachments on ticket #{ticket_id} ({t.get('display_id', '')}): {t.get('subject', '')}",
+        "",
+        f"{'#':<4} {'ID':<8} {'Type':<22} {'Size':<10} {'Source':<32} Name",
+        "-" * 110,
+    ]
+    for i, a in enumerate(all_attachments, 1):
+        aid   = a.get("id", "?")
+        name  = a.get("name", "?")
+        ftype = a.get("type") or a.get("content_type") or "unknown"
+        size  = _fmt_size(a.get("size", 0))
+        src   = a.get("_source", "?")
+        lines.append(f"{i:<4} {str(aid):<8} {ftype:<22} {size:<10} {src:<32} {name}")
+
+    lines += [
+        "",
+        f"Total: {len(all_attachments)} attachment(s)",
+        "",
+        "To view/download: download_attachment(ticket_id, attachment_id)",
+        "Images (PNG/JPG/GIF/WEBP) are returned directly for the agent to view.",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def download_attachment(ticket_id: int, attachment_id: int):
+    """
+    Download a specific attachment from a ticket.
+
+    Images (PNG, JPG, GIF, WEBP) are returned as native image content so the
+    agent can view them directly. Other file types return metadata + URL.
+
+    Get attachment IDs from get_ticket_attachments(ticket_id).
+
+    Args:
+        ticket_id:     Numeric ticket ID.
+        attachment_id: Attachment ID from get_ticket_attachments.
+    """
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r   = requests.get(url, auth=_auth())
+    if r.status_code != 200:
+        return f"Error fetching ticket {ticket_id}: {r.status_code} {r.text}"
+
+    all_attachments = _collect_attachments(r.json())
+    target = next((a for a in all_attachments if a.get("id") == attachment_id), None)
+
+    if not target:
+        return (f"Attachment id={attachment_id} not found on ticket #{ticket_id}. "
+                f"Run get_ticket_attachments({ticket_id}) to see valid IDs.")
+
+    name   = target.get("name", "file")
+    ftype  = target.get("type") or target.get("content_type") or ""
+    size   = target.get("size", 0)
+    dl_url = target.get("url") or target.get("download_url") or ""
+
+    if not dl_url:
+        return (f"Attachment '{name}' (id={attachment_id}) has no download URL in the API response. "
+                f"Size: {_fmt_size(size)}, Type: {ftype}")
+
+    # Download — try with auth first, then without (pre-signed URLs don't need it)
+    dl = requests.get(dl_url, auth=_auth(), timeout=30)
+    if dl.status_code != 200:
+        dl = requests.get(dl_url, timeout=30)
+    if dl.status_code != 200:
+        return (f"Error downloading '{name}': HTTP {dl.status_code}.\n"
+                f"Direct URL (requires HappyFox login): {dl_url}")
+
+    # Return as Image if it's an image type so the agent can see it
+    image_exts  = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    image_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+    is_image    = (ftype.lower() in image_types or
+                   any(name.lower().endswith(ext) for ext in image_exts))
+
+    if is_image:
+        fmt = (ftype.split("/")[-1] if "/" in ftype else
+               next((ext.lstrip(".") for ext in image_exts if name.lower().endswith(ext)), "png"))
+        fmt = fmt.replace("jpeg", "jpg")
+        return Image(data=dl.content, format=fmt)
+
+    return (f"Downloaded '{name}' (id={attachment_id})\n"
+            f"Type : {ftype or 'unknown'}\n"
+            f"Size : {_fmt_size(size)}\n"
+            f"Note : Non-image file - cannot be displayed inline.\n"
+            f"URL  : {dl_url}")
+
+
+@mcp.tool()
 def list_statuses() -> str:
-    """
-    List all ticket statuses configured in HappyFox with their IDs.
-
-    Use the status ID when closing a ticket or changing its status via
-    change_ticket_status() or add_ticket_update().
-    """
-    status_code, data = _happyfox_get("/statuses/")
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
-
-    statuses = data
-    lines    = ["Available Statuses:", ""]
-    for s in statuses:
-        lines.append(
-            f"  id={s['id']:<4}  behavior={s.get('behavior', '?'):<12}  name={s['name']}"
-        )
+    """List all ticket statuses with IDs. Use IDs with change_ticket_status()."""
+    r = requests.get(f"{BASE_URL}/statuses/", auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
+    lines = ["Available Statuses:", ""]
+    for s in r.json():
+        lines.append(f"  id={s['id']:<4}  behavior={s.get('behavior','?'):<12}  name={s['name']}")
     return "\n".join(lines)
 
 
 @mcp.tool()
 def list_categories() -> str:
-    """
-    List all ticket categories configured in HappyFox with their IDs.
-
-    Use the category ID with list_tickets(category_id=...) to filter the
-    ticket queue to a specific category, or with create_ticket() to file
-    a ticket under the right category.
-    """
-    status_code, data = _happyfox_get("/categories/")
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
-
-    categories = data
-    lines      = ["Available Categories:", ""]
-    for c in categories:
-        lines.append(
-            f"  id={c['id']:<4}  name={c.get('name', '?')}"
-        )
+    """List all ticket categories with IDs. Use with list_tickets(category_id=...)."""
+    r = requests.get(f"{BASE_URL}/categories/", auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
+    lines = ["Available Categories:", ""]
+    for c in r.json():
+        lines.append(f"  id={c['id']:<4}  name={c.get('name','?')}")
     return "\n".join(lines)
 
 
 @mcp.tool()
 def list_staff() -> str:
-    """
-    List all staff/agents with their IDs.
-
-    The staff ID is required when posting updates, private notes, or
-    changing ticket status.
-    """
-    status_code, data = _happyfox_get("/staff/")
-    if status_code != 200:
-        return f"Error {status_code}: {data.get('error', '')}"
-
-    staff = data
+    """List all staff/agents with IDs. Staff ID required for posting updates."""
+    r = requests.get(f"{BASE_URL}/staff/", auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
     lines = ["Staff / Agents:", ""]
-    for s in staff:
+    for s in r.json():
         active = "active" if s.get("active") else "inactive"
-        lines.append(
-            f"  id={s['id']:<4}  {active:<8}  {s.get('name', '?')}  <{s.get('email', '?')}>"
-        )
+        lines.append(f"  id={s['id']:<4}  {active:<8}  {s.get('name','?')}  <{s.get('email','?')}>")
     return "\n".join(lines)
 
 
 # ===========================================================================
-# WRITE TOOLS  (draft → confirm pattern)
+# WRITE TOOLS
 # ===========================================================================
 
 @mcp.tool()
@@ -503,46 +416,35 @@ def add_ticket_update(
     """
     Post a reply or private note to a ticket.
 
-    IMPORTANT: Always show the exact message text to the user and get their
-    explicit approval before calling this tool. Replies are sent immediately
-    and cannot be unsent.
+    IMPORTANT: Show the exact message to the user and get approval before
+    calling. Replies are sent immediately and cannot be unsent.
 
     Args:
         ticket_id:      Numeric ticket ID.
-        message:        The reply or note body (plain text).
-        staff_id:       ID of the staff member posting the update (from list_staff).
-        is_private:     If True, posts as a private internal note (not sent to
-                        the contact). Default False (public reply).
-        status_id:      Optional status ID to set at the same time (e.g. to
-                        close the ticket). Use list_statuses() to find IDs.
-        notify_contact: Whether to email the contact. Ignored for private notes.
+        message:        Reply or note body (plain text).
+        staff_id:       Staff ID posting the update (from list_staff).
+        is_private:     True = private internal note. False = public reply.
+        status_id:      Optional status ID to change at the same time.
+        notify_contact: Email the contact? Ignored for private notes.
     """
     if is_private:
-        endpoint = f"/ticket/{ticket_id}/staff_pvtnote/"
-        payload  = {
-            "staff":     staff_id,
-            "plaintext": message,
-        }
+        endpoint = f"{BASE_URL}/ticket/{ticket_id}/staff_pvtnote/"
+        payload  = {"staff": staff_id, "plaintext": message}
     else:
-        endpoint = f"/ticket/{ticket_id}/staff_update/"
-        payload  = {
-            "staff":           staff_id,
-            "plaintext":       message,
-            "update_customer": notify_contact,
-        }
+        endpoint = f"{BASE_URL}/ticket/{ticket_id}/staff_update/"
+        payload  = {"staff": staff_id, "plaintext": message, "update_customer": notify_contact}
 
     if status_id is not None:
         payload["status"] = status_id
 
-    status_code, resp = _happyfox_post(endpoint, payload)
-    if status_code in (200, 201):
+    r = requests.post(endpoint, auth=_auth(), json=payload)
+    if r.status_code in (200, 201):
         kind   = "Private note" if is_private else "Reply"
         result = f"{kind} posted successfully to ticket #{ticket_id}."
         if status_id is not None:
             result += f"  Status changed to id={status_id}."
         return result
-
-    return f"Error {status_code}: {resp.get('error', '')}"
+    return f"Error {r.status_code}: {r.text}"
 
 
 @mcp.tool()
@@ -556,110 +458,77 @@ def create_ticket(
     assignee_id:   int = None,
 ) -> str:
     """
-    Create a new support ticket.
-
-    IMPORTANT: Confirm all details with the user before calling this.
+    Create a new support ticket. IMPORTANT: Confirm all details first.
 
     Args:
         subject:       Ticket subject line.
-        message:       Opening message body (plain text).
-        contact_name:  Name of the contact the ticket is for.
-        contact_email: Email address of the contact.
-        category_id:   HappyFox category ID (use list_categories() to find IDs).
+        message:       Opening message (plain text).
+        contact_name:  Contact's name.
+        contact_email: Contact's email address.
+        category_id:   Category ID (from list_categories).
         priority_id:   Optional priority ID.
-        assignee_id:   Optional staff ID to assign immediately (from list_staff).
+        assignee_id:   Optional staff ID to assign (from list_staff).
     """
-    payload = {
-        "subject":  subject,
-        "text":     message,
-        "name":     contact_name,
-        "email":    contact_email,
-        "category": category_id,
-    }
+    payload = {"subject": subject, "text": message, "name": contact_name,
+               "email": contact_email, "category": category_id}
     if priority_id is not None:
         payload["priority"] = priority_id
     if assignee_id is not None:
         payload["assignee"] = assignee_id
 
-    status_code, resp = _happyfox_post("/tickets/", payload)
-    if status_code in (200, 201):
-        return (
-            f"Ticket created: #{resp.get('id')}  {resp.get('display_id')}  "
-            f"— {resp.get('subject')}"
-        )
-    return f"Error {status_code}: {resp.get('error', '')}"
+    r = requests.post(f"{BASE_URL}/tickets/", auth=_auth(), json=payload)
+    if r.status_code in (200, 201):
+        c = r.json()
+        return f"Ticket created: #{c.get('id')}  {c.get('display_id')}  - {c.get('subject')}"
+    return f"Error {r.status_code}: {r.text}"
 
 
 @mcp.tool()
 def suggest_ticket_rename(ticket_id: int, suggested_subject: str, staff_id: int) -> str:
     """
-    Flag a ticket for renaming by posting a private internal note with the
-    suggested new title.
+    Post a private note suggesting a better ticket title.
 
-    The HappyFox v1.1 API does not expose ticket subject editing — the
-    'subject' field on staff_update only controls the outgoing email reply
-    subject line, not the ticket title, and returns a 400 error when used
-    alone. This is a confirmed hard limitation of the API (the edit_subject
-    permission exists in HappyFox but is only accessible through the UI).
-
-    This tool posts a clearly-formatted private note instead. The note is
-    visible to agents when they open the ticket, so they can apply the rename
-    manually in two clicks. The note is never shown to the contact.
-
-    IMPORTANT: Confirm the suggested title with the user before calling this.
+    The HappyFox v1.1 API cannot rename ticket subjects directly (confirmed
+    hard API limitation). This posts a private note so an agent can apply
+    the rename manually in the UI in two clicks.
 
     Args:
         ticket_id:         Numeric ticket ID.
-        suggested_subject: The recommended new subject / title.
-        staff_id:          ID of the staff member posting the note (from list_staff).
+        suggested_subject: The recommended new title.
+        staff_id:          Staff ID posting the note (from list_staff).
     """
-    note = (
-        f"[AI TITLE SUGGESTION]\n"
-        f"Suggested title: {suggested_subject}\n\n"
-        f"The original subject was unclear. Please rename this ticket manually "
-        f"in HappyFox if the suggested title is accurate."
-    )
-    payload = {
-        "staff":     staff_id,
-        "plaintext": note,
-    }
-    status_code, resp = _happyfox_post(f"/ticket/{ticket_id}/staff_pvtnote/", payload)
-    if status_code in (200, 201):
-        return (
-            f"Private note posted to ticket #{ticket_id} with suggested title: "
-            f"\"{suggested_subject}\"\n"
-            f"Note: The HappyFox API does not support renaming ticket titles directly. "
-            f"An agent will need to apply the rename manually via the UI."
-        )
-    return f"Error {status_code}: {resp.get('error', '')}"
+    note = (f"[AI TITLE SUGGESTION]\n"
+            f"Suggested title: {suggested_subject}\n\n"
+            f"The original subject was unclear. Please rename manually in HappyFox UI.")
+    r = requests.post(f"{BASE_URL}/ticket/{ticket_id}/staff_pvtnote/",
+                      auth=_auth(),
+                      json={"staff": staff_id, "plaintext": note})
+    if r.status_code in (200, 201):
+        return (f"Private note posted to ticket #{ticket_id} suggesting title: \"{suggested_subject}\"\n"
+                f"An agent will need to apply the rename manually via the UI.")
+    return f"Error {r.status_code}: {r.text}"
 
 
 @mcp.tool()
 def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
     """
-    Change the status of a ticket (e.g. close it, put it on hold).
-
-    Use list_statuses() to find the correct status ID first.
+    Change the status of a ticket. Use list_statuses() to find IDs.
 
     Args:
         ticket_id: Numeric ticket ID.
-        status_id: ID of the new status (from list_statuses).
-        staff_id:  ID of the staff member making the change (from list_staff).
+        status_id: New status ID (from list_statuses).
+        staff_id:  Staff ID making the change (from list_staff).
     """
-    payload = {
-        "staff":  staff_id,
-        "status": status_id,
-    }
-    status_code, resp = _happyfox_post(f"/ticket/{ticket_id}/staff_update/", payload)
-    if status_code in (200, 201):
+    r = requests.post(f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
+                      auth=_auth(),
+                      json={"staff": staff_id, "status": status_id})
+    if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} status changed to id={status_id}."
-    return f"Error {status_code}: {resp.get('error', '')}"
+    return f"Error {r.status_code}: {r.text}"
 
 
 # ===========================================================================
 # Entry point
 # ===========================================================================
 if __name__ == "__main__":
-    # host/port were already passed to the FastMCP() constructor above.
-    # .run() only accepts 'transport' — passing host/port here raises TypeError.
     mcp.run(transport=_transport)
