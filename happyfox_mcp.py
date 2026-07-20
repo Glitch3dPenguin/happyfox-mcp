@@ -388,6 +388,23 @@ def list_categories() -> str:
 
 
 @mcp.tool()
+def list_priorities() -> str:
+    """
+    List all ticket priorities configured in HappyFox with their IDs.
+
+    Use the priority ID with change_ticket_priority() to escalate or
+    de-escalate a ticket.
+    """
+    r = requests.get(f"{BASE_URL}/priorities/", auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: {r.text}"
+    lines = ["Available Priorities:", ""]
+    for p in r.json():
+        lines.append(f"  id={p['id']:<4}  name={p.get('name', '?')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def list_staff() -> str:
     """List all staff/agents with IDs. Staff ID required for posting updates."""
     r = requests.get(f"{BASE_URL}/staff/", auth=_auth())
@@ -524,6 +541,73 @@ def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
                       json={"staff": staff_id, "status": status_id})
     if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} status changed to id={status_id}."
+    return f"Error {r.status_code}: {r.text}"
+
+
+@mcp.tool()
+def assign_ticket(ticket_id: int, assignee_staff_id: int, staff_id: int) -> str:
+    """
+    Assign (or reassign) a ticket to a specific staff member.
+
+    Use list_staff() to find valid staff IDs.
+
+    Args:
+        ticket_id:         Numeric ticket ID.
+        assignee_staff_id: ID of the staff member to assign the ticket to.
+        staff_id:          ID of the staff member making the change (can be
+                           the same as assignee_staff_id for self-assignment).
+    """
+    r = requests.post(
+        f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
+        auth=_auth(),
+        json={"staff": staff_id, "assigned_to": assignee_staff_id},
+    )
+    if r.status_code in (200, 201):
+        return f"Ticket #{ticket_id} assigned to staff id={assignee_staff_id}."
+    return f"Error {r.status_code}: {r.text}"
+
+
+@mcp.tool()
+def change_ticket_priority(ticket_id: int, priority_id: int, staff_id: int) -> str:
+    """
+    Change the priority of a ticket (e.g. escalate to Urgent or de-escalate).
+
+    Use list_priorities() to find valid priority IDs.
+
+    Args:
+        ticket_id:   Numeric ticket ID.
+        priority_id: ID of the new priority (from list_priorities).
+        staff_id:    ID of the staff member making the change (from list_staff).
+    """
+    r = requests.post(
+        f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
+        auth=_auth(),
+        json={"staff": staff_id, "priority": priority_id},
+    )
+    if r.status_code in (200, 201):
+        return f"Ticket #{ticket_id} priority changed to id={priority_id}."
+    return f"Error {r.status_code}: {r.text}"
+
+
+@mcp.tool()
+def change_ticket_category(ticket_id: int, category_id: int, staff_id: int) -> str:
+    """
+    Move a ticket into a different category.
+
+    Use list_categories() to find valid category IDs.
+
+    Args:
+        ticket_id:   Numeric ticket ID.
+        category_id: ID of the new category (from list_categories).
+        staff_id:    ID of the staff member making the change (from list_staff).
+    """
+    r = requests.post(
+        f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
+        auth=_auth(),
+        json={"staff": staff_id, "category": category_id},
+    )
+    if r.status_code in (200, 201):
+        return f"Ticket #{ticket_id} moved to category id={category_id}."
     return f"Error {r.status_code}: {r.text}"
 
 
