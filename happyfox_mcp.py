@@ -73,7 +73,9 @@ def get_ticket_attachments(ticket_id: int) -> str:
         return f"Error {r.status_code}: Failed to fetch ticket data\n{r.text}"
     
     t = r.json()
-    attachments = t.get("attachments", [])
+    # Attachments are nested in first_message.attachments, not at top level
+    first_message = t.get("first_message", {})
+    attachments = first_message.get("attachments", [])
     
     if not attachments:
         return f"Ticket #{ticket_id} has no attachments."
@@ -94,7 +96,7 @@ def get_ticket_attachments(ticket_id: int) -> str:
         
         lines.append(f"  {filename}")
         lines.append(f"    Size:   {size_kb:.1f} KB")
-        lines.append(f"    Type:   {mime_type}")
+        lines.append(f"    Type:   mime_type")
         
         if download_url:
             lines.append(f"    URL:    {download_url}")
