@@ -197,6 +197,129 @@ def download_attachment(attachment_id: int, output_path: str = None) -> str:
 # ===========================================================================
 
 @mcp.tool()
+def get_ticket_attachments(ticket_id: int) -> str:
+    """
+    List all attachments on a ticket with download URLs.
+
+    Returns metadata about all attachments (images, documents, etc.) associated
+    with a specific ticket. For each attachment, provides the filename, size,
+    MIME type, and a URL to download the actual file content.
+
+    IMPORTANT: The returned data includes metadata only, not the actual file
+    content. Use download_attachment() to fetch the full file data.
+
+    Args:
+        ticket_id: Numeric ticket ID (from list_tickets).
+    """
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r   = requests.get(url, auth=_auth())
+    
+    if r.status_code != 200:
+        return f"Error {r.status_code}: Failed to fetch ticket data\n{r.text}"
+    
+    t = r.json()
+    attachments = t.get("attachments", [])
+    
+    if not attachments:
+        return f"Ticket #{ticket_id} has no attachments."
+    
+    lines = [f"Attachments for Ticket #{ticket_id}:", ""]
+    
+    for att in attachments:
+        filename = att.get("filename", "unknown")
+        size_kb  = att.get("size", 0) / 1024 if att.get("size") else 0
+        mime_type = att.get("mime_type", "unknown")
+        
+        # Try to get download URL from various possible fields
+        download_url = None
+        for key in ("url", "download_url", "file_url"):
+            if att.get(key):
+                download_url = att[key]
+                break
+        
+        lines.append(f"  {filename}")
+        lines.append(f"    Size:   {size_kb:.1f} KB")
+        lines.append(f"    Type:   {mime_type}")
+        
+        if download_url:
+            lines.append(f"    URL:    {download_url}")
+            lines.append(f"    Use download_attachment() to save locally.")
+        else:
+            lines.append("    URL:    Not available in metadata")
+        
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def download_attachment(attachment_id: int, output_path: str = None) -> str:
+    """
+    Download an attachment from HappyFox and save it to a local file.
+
+    Fetches the actual binary content of an attachment using its ID and saves
+    it to the specified path (or /mnt/uploads/ if no path is given). Returns
+    confirmation with file size and location.
+
+    Args:
+        attachment_id: Numeric attachment ID (from get_ticket_attachments or
+                       list_tickets output showing attachment count).
+        output_path:   Optional full filesystem path where to save the file.
+                       If omitted, saves to /mnt/uploads/<original_filename>.
+    
+    Returns:
+        Confirmation message with filename, size, and saved location.
+    """
+    # Fetch attachment metadata to get download URL
+    url = f"{BASE_URL}/attachment/{attachment_id}"
+    r   = requests.get(url, auth=_auth())
+    
+    if r.status_code != 200:
+        return (f"Error {r.status_code}: Failed to fetch attachment metadata\n"
+                f"URL tried: {url}\n{r.text}")
+    
+    att = r.json()
+    filename = att.get("filename", "attachment")
+    mime_type = att.get("mime_type", "application/octet-stream")
+    
+    # Extract download URL from various possible fields
+    download_url = None
+    for key in ("url", "download_url", "file_url"):
+        if att.get(key):
+            download_url = att[key]
+            break
+    
+    if not download_url:
+        return (f"No download URL found for attachment {attachment_id}. "
+                f"Available fields: {list(att.keys())}")
+    
+    # Download the actual file content
+    r = requests.get(download_url, auth=_auth(), stream=True)
+    if r.status_code != 200:
+        return (f"Error {r.status_code}: Failed to download attachment\n"
+                f"URL tried: {download_url}\n{r.text}")
+    
+    # Determine output path
+    if not output_path:
+        import os
+        os.makedirs("/mnt/uploads", exist_ok=True)
+        output_path = f"/mnt/uploads/{filename}"
+    
+    # Save file to disk
+    with open(output_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+    
+    size_kb = os.path.getsize(output_path) / 1024
+    
+    return (f"✅ Attachment downloaded successfully!\n\n"
+            f"**Filename:** {filename}\n"
+            f"**Size:**     {size_kb:.1f} KB\n"
+            f"**Type:**     {mime_type}\n"
+            f"**Saved to:** {output_path}")
+
+
+@mcp.tool()
 def list_tickets(
     status:      str = "_pending",
     query:       str = "",
