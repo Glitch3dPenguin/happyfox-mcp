@@ -115,55 +115,65 @@ def get_ticket_attachments(ticket_id: int) -> str:
     if status_code != 200:
         return f"Error {status_code}: Failed to fetch ticket data\n{data.get('error', '')}"
 
-    t = data
-    # Attachments can be in first_message.attachments or at top level
+    t     = data
+    found = False
     attachments = []
 
-    # Try first_message.first (singular) — HappyFox API quirk
-    fm_first = t.get("first_message", {}).get("first", {})
-    if fm_first:
-        attachments.extend(fm_first.get("attachments", []))
+    # HappyFox nests attachment metadata in updates[].message.attachments.
+    # Each update entry (including the opening message) can carry its own set.
+    for upd in t.get("updates", []) or []:
+        msg      = upd.get("message") or {}
+        att_list = msg.get("attachments") or []
+        if not isinstance(att_list, list):
+            continue
+        for a in att_list:
+            attachments.append(a)
+            found = True
 
-    # Also check top-level attachment fields on the ticket object itself
-    for key in ("attachments", "attachment"):
-        val = t.get(key)
-        if isinstance(val, list):
-            attachments.extend(val)
-        elif isinstance(val, dict):
-            # Sometimes it's nested under a "first" key even at top level
-            inner = val.get("first", {})
-            if isinstance(inner, list):
-                attachments.extend(inner)
+    # Also look at the raw first_message string for CID references as a fallback.
+    if not found and not attachments:
+        fm_str = t.get("first_message") or ""
+        cids   = re.findall(r'cid:([a-f0-9\-]+)', fm_str)
+        for cid in cids:
+            # Try fetching via the CID endpoint to get metadata.
+            att_status, att_data = _happyfox_get(f"/attachment_by_cid/{cid}")
+            if att_status == 200 and isinstance(att_data, dict):
+                attachments.append({
+                    "id":       cid,
+                    "filename": att_data.get("filename", f"attachment_{cid[:8]}.bin"),
+                    "url":      att_data.get("download_url", ""),
+                })
 
-    # Deduplicate by id
+    if not attachments:
+        return (f"No attachments found on Ticket #{ticket_id}.\n"
+                f"(attachments_count in API metadata shows {t.get('attachments_count', 0)} — "
+                f"they may be embedded inline via CID references that couldn't be resolved.)")
+
     seen_ids = set()
     unique_attachments = []
     for att in attachments:
-        aid = att.get("id") or att.get("attachment_id")
+        aid = att.get("id", "")
         if aid and aid not in seen_ids:
             seen_ids.add(aid)
             unique_attachments.append(att)
 
-    if not unique_attachments:
-        return f"Ticket #{ticket_id} has no attachments."
+    lines = [f"Attachments for Ticket #{ticket_id} ({len(attachments)} found):", ""]
 
-    lines = [f"Attachments for Ticket #{ticket_id}:", ""]
+    for i, att in enumerate(unique_attachments, 1):
+        filename   = att.get("filename", "unknown")
+        size_kb    = (att.get("size", 0) / 1024) if att.get("size") else None
+        mime_type  = att.get("mime_type", "unknown")
+        aid        = att.get("id", "")
+        raw_url    = att.get("url", "")
 
-    for att in unique_attachments:
-        filename = att.get("filename", "unknown")
-        size_kb  = att.get("size", 0) / 1024 if att.get("size") else 0
-        mime_type = att.get("mime_type", "unknown")
-        aid = att.get("id") or att.get("attachment_id", "")
+        # Use the pre-signed S3 URL directly if present; otherwise fall back to API endpoint.
+        download_url = raw_url or f"https://{HAPPYFOX_DOMAIN}/api/1.1/json/attachment/{aid}"
 
-        # Build the HappyFox download URL for this attachment
-        download_url = f"https://{HAPPYFOX_DOMAIN}/api/1.1/json/attachment/{aid}"
-
-        lines.append(f"  {filename}")
-        lines.append(f"    Size:   {size_kb:.1f} KB")
-        lines.append(f"    Type:   {mime_type}")
-        lines.append(f"    URL:    {download_url}")
-        lines.append(f"    ID:     {aid}")
-        lines.append(f"    Use download_attachment() to save locally.")
+        lines.append(f"  [{i}] {filename}")
+        lines.append(f"      Size:   {size_kb:.1f} KB" if size_kb else "      Size:   unknown")
+        lines.append(f"      Type:   {mime_type}")
+        lines.append(f"      ID:     {aid}")
+        lines.append(f"      URL:    {download_url[:200]}{'...' if len(download_url) > 200 else ''}")
         lines.append("")
 
     return "\n".join(lines)
