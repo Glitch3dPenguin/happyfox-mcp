@@ -10,6 +10,7 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 
 - **Context-safe ticket listing** — compact summary table (ID, status, priority, assignee, subject). No message bodies in list output.
 - **On-demand detail fetching** — pull metadata or the full message thread for a single ticket when you need it.
+- **Attachment viewing & downloading** — view images and download documents attached to tickets directly from AI clients.
 - **Status management** — change ticket status, close tickets, look up all available statuses by ID.
 - **Draft → confirm pattern** — write tools are designed to be confirmed by the user before posting.
 - **Ticket renaming** — let an agent retitle vague subjects like "Help!!" to something meaningful.
@@ -29,6 +30,8 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 | `get_ticket_messages` | Full conversation thread for one ticket. Returns the most recent N messages (default 5). |
 | `list_statuses` | All statuses in your HappyFox account with their IDs. |
 | `list_staff` | All staff/agents with their IDs. |
+| **`get_ticket_attachments(ticket_id)`** | List all attachments on a ticket with metadata and download URLs. Returns filenames, sizes, MIME types, and direct download links. |
+| **`download_attachment(attachment_id, output_path=None)`** | Download an attachment file from HappyFox to local storage. Saves to `/mnt/uploads/` by default or custom path if specified. Returns confirmation with file details. |
 
 ### Write Tools
 
