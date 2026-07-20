@@ -47,6 +47,151 @@ def _strip_html(text: str) -> str:
     """Strip HTML tags from a string."""
     return re.sub(r"<[^>]+>", "", text).strip()
 
+@mcp.tool()
+def get_ticket_attachments(ticket_id: int) -> str:
+    """
+    Download and display attachments from a ticket.
+
+    Fetches all attachments associated with a ticket, including images,
+    documents, and other files. For image attachments, the content is
+    returned inline so it can be viewed directly. For non-image files,
+    download URLs are provided.
+
+    IMPORTANT: This tool downloads actual file data from HappyFox servers.
+    Large files or many attachments may take time to fetch.
+
+    Args:
+        ticket_id: Numeric ticket ID (from list_tickets).
+    """
+    # First try to get attachment metadata from the ticket endpoint
+    url = f"{BASE_URL}/ticket/{ticket_id}/"
+    r = requests.get(url, auth=_auth())
+    
+    if r.status_code != 200:
+        return f"Error {r.status_code}: Failed to fetch ticket data\n{r.text}"
+    
+    t = r.json()
+    attachments = t.get("attachments", [])
+    
+    if not attachments:
+        return f"Ticket #{ticket_id} has no attachments."
+    
+    lines = [f"Attachments for Ticket #{ticket_id}:", ""]
+    
+    for att in attachments:
+        filename = att.get("filename", "unknown")
+        size_kb = att.get("size", 0) / 1024 if att.get("size") else 0
+        mime_type = att.get("mime_type", "")
+        
+        # Check if this is an image attachment
+        is_image = any(ext in mime_type.lower() for ext in ["image/", "png", "jpg", "jpeg"])
+        
+        lines.append(f"File: {filename}")
+        lines.append(f"  Size: {size_kb:.1f} KB")
+        lines.append(f"  Type: {mime_type or 'unknown'}")
+        
+        # Try to get download URL from attachment metadata
+        download_url = None
+        
+        # HappyFox API sometimes includes direct URLs in attachments
+        if "url" in att:
+            download_url = att["url"]
+        elif "download_url" in att:
+            download_url = att["download_url"]
+        
+        # Try to construct URL based on HappyFox patterns
+        if not download_url and att.get("id"):
+            # Pattern 1: /api/1.1/attachment/{id}
+            download_url = f"{BASE_URL}/attachment/{att['id']}"
+        
+        if download_url:
+            lines.append(f"  Download URL: {download_url}")
+            
+            # For images, try to fetch and display inline
+            if is_image:
+                try:
+                    img_response = requests.get(
+                        download_url, 
+                        auth=_auth(),
+                        headers={"Accept": "image/*"}
+                    )
+                    
+                    if img_response.status_code == 200:
+                        # Convert to base64 for inline display
+                        import base64
+                        b64_data = base64.b64encode(img_response.content).decode('utf-8')
+                        lines.append(f"  Image (base64): data:{mime_type};base64,{b64_data[:50]}...")
+                        lines.append("  [Full image data truncated - use download URL for complete file]")
+                    else:
+                        lines.append(f"  Image fetch failed: HTTP {img_response.status_code}")
+                except Exception as e:
+                    lines.append(f"  Error fetching image: {str(e)}")
+        else:
+            lines.append("  Download URL: Not available (try HappyFox web UI)")
+        
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def download_attachment(attachment_id: int, output_path: str = None) -> str:
+    """
+    Download a specific attachment from HappyFox and save it locally.
+
+    Returns the local file path where the attachment was saved. If no
+    output_path is provided, saves to /mnt/uploads/ with the original filename.
+
+    Args:
+        attachment_id: Numeric attachment ID (from get_ticket_attachments).
+        output_path: Optional custom path to save the file. Defaults to /mnt/uploads/.
+    """
+    # Get attachment metadata first
+    url = f"{BASE_URL}/attachment/{attachment_id}"
+    r = requests.get(url, auth=_auth())
+    
+    if r.status_code != 200:
+        return f"Error {r.status_code}: Failed to fetch attachment metadata\n{r.text}"
+    
+    att = r.json()
+    filename = att.get("filename", "attachment")
+    mime_type = att.get("mime_type", "application/octet-stream")
+    
+    # Get download URL
+    download_url = None
+    if "url" in att:
+        download_url = att["url"]
+    elif "download_url" in att:
+        download_url = att["download_url"]
+    else:
+        return f"No download URL available for attachment {attachment_id}"
+    
+    # Fetch the actual file content
+    r = requests.get(download_url, auth=_auth())
+    if r.status_code != 200:
+        return f"Error {r.status_code}: Failed to download attachment\n{r.text}"
+    
+    # Determine output path
+    if not output_path:
+        import os
+        os.makedirs("/mnt/uploads", exist_ok=True)
+        output_path = f"/mnt/uploads/{filename}"
+    
+    # Save file
+    with open(output_path, "wb") as f:
+        f.write(r.content)
+    
+    size_kb = len(r.content) / 1024
+    
+    return (
+        f"Attachment downloaded successfully!\n"
+        f"Filename: {filename}\n"
+        f"Size: {size_kb:.1f} KB\n"
+        f"MIME Type: {mime_type}\n"
+        f"Saved to: {output_path}"
+    )
+
+
 # ===========================================================================
 # READ TOOLS
 # ===========================================================================
