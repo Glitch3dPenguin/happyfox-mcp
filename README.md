@@ -30,6 +30,8 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 | `get_ticket_messages` | Full conversation thread for one ticket. Returns the most recent N messages (default 5). |
 | `list_statuses` | All statuses in your HappyFox account with their IDs. |
 | `list_staff` | All staff/agents with their IDs. |
+| **`get_ticket_attachments(ticket_id)`** | List all attachments on a ticket with metadata and download URLs. Returns filenames, sizes, MIME types, and direct download links. |
+| **`download_attachment(attachment_id, output_path=None)`** | Download an attachment file from HappyFox to local storage. Saves to `/mnt/uploads/` by default or custom path if specified. Returns confirmation with file details. |
 
 ### Write Tools
 
