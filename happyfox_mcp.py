@@ -1,7 +1,15 @@
 import os
 import re
+import logging
 import requests
 from mcp.server.fastmcp import FastMCP, Image
+
+# ---------------------------------------------------------------------------
+# Logging setup — suppress noisy ClientDisconnect / Starlette warnings so the
+# server logs stay clean for operators.
+# ---------------------------------------------------------------------------
+logging.getLogger("mcp.server.streamable_http").setLevel(logging.INFO)
+logging.getLogger("starlette.requests").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # Server init
@@ -110,7 +118,7 @@ def list_tickets(
     if category_id is not None:
         params["category"] = category_id
 
-    r = requests.get(url, auth=_auth(), params=params)
+    r = requests.get(url, auth=_auth(), params=params, timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -170,7 +178,7 @@ def get_ticket_details(ticket_id: int) -> str:
         ticket_id: Numeric ticket ID (the 'id' column from list_tickets).
     """
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r   = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -216,7 +224,7 @@ def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
         max_messages: How many of the most-recent updates to return (default 5).
     """
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r   = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -266,7 +274,7 @@ def get_ticket_attachments(ticket_id: int) -> str:
         ticket_id: Numeric ticket ID.
     """
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r   = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
 
@@ -274,8 +282,31 @@ def get_ticket_attachments(ticket_id: int) -> str:
     all_attachments = _collect_attachments(t)
 
     if not all_attachments:
+        # Fallback: some accounts embed files inline as CID references in the
+        # message HTML without structured attachment objects. Scan for them
+        # and try to resolve each one via the CID endpoint.
+        cids = re.findall(r"cid:([a-f0-9\-]+)", t.get("first_message") or "")
+        for cid in cids:
+            cr = requests.get(f"{BASE_URL}/attachment_by_cid/{cid}",
+                              auth=_auth(), timeout=30)
+            if cr.status_code != 200:
+                continue
+            c = cr.json()
+            if not isinstance(c, dict):
+                continue
+            all_attachments.append({
+                "id":      c.get("id", cid),
+                "name":    c.get("name") or c.get("filename", f"attachment_{cid[:8]}"),
+                "type":    c.get("type") or c.get("mime_type", "unknown"),
+                "size":    c.get("size", 0),
+                "url":     c.get("url") or c.get("download_url", ""),
+                "_source": "Inline CID reference",
+            })
+
+    if not all_attachments:
         return (f"Ticket #{ticket_id} ({t.get('display_id', '')}) has no attachments.\n"
-                f"(attachments_count from API: {t.get('attachments_count', 0)})")
+                f"(attachments_count from API: {t.get('attachments_count', 0)} — "
+                f"they may be inline CID references that could not be resolved.)")
 
     lines = [
         f"Attachments on ticket #{ticket_id} ({t.get('display_id', '')}): {t.get('subject', '')}",
@@ -316,7 +347,7 @@ def download_attachment(ticket_id: int, attachment_id: int):
         attachment_id: Attachment ID from get_ticket_attachments.
     """
     url = f"{BASE_URL}/ticket/{ticket_id}/"
-    r   = requests.get(url, auth=_auth())
+    r   = requests.get(url, auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error fetching ticket {ticket_id}: {r.status_code} {r.text}"
 
@@ -366,7 +397,7 @@ def download_attachment(ticket_id: int, attachment_id: int):
 @mcp.tool()
 def list_statuses() -> str:
     """List all ticket statuses with IDs. Use IDs with change_ticket_status()."""
-    r = requests.get(f"{BASE_URL}/statuses/", auth=_auth())
+    r = requests.get(f"{BASE_URL}/statuses/", auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
     lines = ["Available Statuses:", ""]
@@ -378,7 +409,7 @@ def list_statuses() -> str:
 @mcp.tool()
 def list_categories() -> str:
     """List all ticket categories with IDs. Use with list_tickets(category_id=...)."""
-    r = requests.get(f"{BASE_URL}/categories/", auth=_auth())
+    r = requests.get(f"{BASE_URL}/categories/", auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
     lines = ["Available Categories:", ""]
@@ -395,7 +426,7 @@ def list_priorities() -> str:
     Use the priority ID with change_ticket_priority() to escalate or
     de-escalate a ticket.
     """
-    r = requests.get(f"{BASE_URL}/priorities/", auth=_auth())
+    r = requests.get(f"{BASE_URL}/priorities/", auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
     lines = ["Available Priorities:", ""]
@@ -407,7 +438,7 @@ def list_priorities() -> str:
 @mcp.tool()
 def list_staff() -> str:
     """List all staff/agents with IDs. Staff ID required for posting updates."""
-    r = requests.get(f"{BASE_URL}/staff/", auth=_auth())
+    r = requests.get(f"{BASE_URL}/staff/", auth=_auth(), timeout=30)
     if r.status_code != 200:
         return f"Error {r.status_code}: {r.text}"
     lines = ["Staff / Agents:", ""]
@@ -454,7 +485,7 @@ def add_ticket_update(
     if status_id is not None:
         payload["status"] = status_id
 
-    r = requests.post(endpoint, auth=_auth(), json=payload)
+    r = requests.post(endpoint, auth=_auth(), json=payload, timeout=30)
     if r.status_code in (200, 201):
         kind   = "Private note" if is_private else "Reply"
         result = f"{kind} posted successfully to ticket #{ticket_id}."
@@ -493,7 +524,7 @@ def create_ticket(
     if assignee_id is not None:
         payload["assignee"] = assignee_id
 
-    r = requests.post(f"{BASE_URL}/tickets/", auth=_auth(), json=payload)
+    r = requests.post(f"{BASE_URL}/tickets/", auth=_auth(), json=payload, timeout=30)
     if r.status_code in (200, 201):
         c = r.json()
         return f"Ticket created: #{c.get('id')}  {c.get('display_id')}  - {c.get('subject')}"
@@ -519,7 +550,8 @@ def suggest_ticket_rename(ticket_id: int, suggested_subject: str, staff_id: int)
             f"The original subject was unclear. Please rename manually in HappyFox UI.")
     r = requests.post(f"{BASE_URL}/ticket/{ticket_id}/staff_pvtnote/",
                       auth=_auth(),
-                      json={"staff": staff_id, "plaintext": note})
+                      json={"staff": staff_id, "plaintext": note},
+                      timeout=30)
     if r.status_code in (200, 201):
         return (f"Private note posted to ticket #{ticket_id} suggesting title: \"{suggested_subject}\"\n"
                 f"An agent will need to apply the rename manually via the UI.")
@@ -538,7 +570,8 @@ def change_ticket_status(ticket_id: int, status_id: int, staff_id: int) -> str:
     """
     r = requests.post(f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
                       auth=_auth(),
-                      json={"staff": staff_id, "status": status_id})
+                      json={"staff": staff_id, "status": status_id},
+                      timeout=30)
     if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} status changed to id={status_id}."
     return f"Error {r.status_code}: {r.text}"
@@ -561,6 +594,7 @@ def assign_ticket(ticket_id: int, assignee_staff_id: int, staff_id: int) -> str:
         f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
         auth=_auth(),
         json={"staff": staff_id, "assigned_to": assignee_staff_id},
+        timeout=30,
     )
     if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} assigned to staff id={assignee_staff_id}."
@@ -583,6 +617,7 @@ def change_ticket_priority(ticket_id: int, priority_id: int, staff_id: int) -> s
         f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
         auth=_auth(),
         json={"staff": staff_id, "priority": priority_id},
+        timeout=30,
     )
     if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} priority changed to id={priority_id}."
@@ -605,6 +640,7 @@ def change_ticket_category(ticket_id: int, category_id: int, staff_id: int) -> s
         f"{BASE_URL}/ticket/{ticket_id}/staff_update/",
         auth=_auth(),
         json={"staff": staff_id, "category": category_id},
+        timeout=30,
     )
     if r.status_code in (200, 201):
         return f"Ticket #{ticket_id} moved to category id={category_id}."
