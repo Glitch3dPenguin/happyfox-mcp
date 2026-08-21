@@ -30,7 +30,7 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 | `list_tickets` | Compact table of tickets — titles and metadata only. Supports filtering by status, search query, category, and pagination. |
 | `get_ticket_details` | Structured metadata + truncated opening message for one ticket. |
 | `get_ticket_messages` | Full conversation thread for one ticket. Returns the most recent N messages (default 5). |
-| `get_ticket_attachments(ticket_id)` | List all attachments on a ticket (opening message + every reply) with IDs, types, sizes, and which message each came from. Falls back to resolving inline `cid:` references when the API returns no structured objects. |
+| `get_ticket_attachments(ticket_id)` | List all attachments on a ticket (opening message + every reply) with IDs, types, sizes, and which message each came from. |
 | `download_attachment(ticket_id, attachment_id)` | Fetch one attachment. Images (PNG/JPG/GIF/WEBP) are returned natively so the agent can view them; other file types return metadata + URL. |
 | `list_statuses` | All statuses in your HappyFox account with their IDs. |
 | `list_categories` | All ticket categories with their IDs (for `list_tickets` filtering and `change_ticket_category`). |
@@ -38,8 +38,6 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 | `list_staff` | All staff/agents with their IDs. |
 
 ### Write Tools
-
-> ⚠️ All write tools should be confirmed with the user before executing. Replies and status changes are immediate.
 
 | Tool | Description |
 |---|---|
@@ -50,27 +48,6 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 | `assign_ticket` | Assign or reassign a ticket to a staff member. |
 | `change_ticket_priority` | Change ticket priority (e.g. escalate to Urgent). |
 | `change_ticket_category` | Move a ticket into a different category. |
-
----
-
-## Recommended Agent Workflow
-
-```
-1. list_tickets()                          # Triage the queue — titles only
-2. get_ticket_details(ticket_id)           # Metadata + opening message
-3. get_ticket_messages(ticket_id)          # Full thread when ready to reply
-4. get_ticket_attachments(ticket_id)       # List files, if any are attached
-5. download_attachment(ticket_id, id)      # View an attached image inline
-6. [show draft reply to user for approval]
-7. add_ticket_update(ticket_id, ...)       # Post approved reply
-```
-
-For status changes:
-```
-1. list_statuses()                         # Find the correct status ID
-2. list_staff()                            # Find your staff ID
-3. change_ticket_status(id, status_id, staff_id)
-```
 
 ---
 
