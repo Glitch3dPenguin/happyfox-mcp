@@ -10,12 +10,14 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 
 - **Context-safe ticket listing** — compact summary table (ID, status, priority, assignee, subject). No message bodies in list output.
 - **On-demand detail fetching** — pull metadata or the full message thread for a single ticket when you need it.
-- **Attachment viewing & downloading** — view images and download documents attached to tickets directly from AI clients.
+- **Attachment viewing & downloading** — images are returned natively so the agent can see them inline; other files return metadata + URL.
 - **Status management** — change ticket status, close tickets, look up all available statuses by ID.
+- **Priority & assignment** — escalate/de-escalate priority and assign or reassign tickets to staff.
+- **Category management** — move tickets between categories, filter the queue by category.
 - **Draft → confirm pattern** — write tools are designed to be confirmed by the user before posting.
-- **Ticket renaming** — let an agent retitle vague subjects like "Help!!" to something meaningful.
+- **Title rename suggestions** — the v1.1 API can't rename subjects, so the agent posts a private note with a suggested title for a human to apply in the UI.
 - **Private notes** — post internal staff notes that are never sent to the contact.
-- **Full staff/status lookup** — resolve IDs before acting, no hardcoding values that differ between accounts.
+- **Full ID lookup** — resolve staff, status, priority, and category IDs before acting, no hardcoding values that differ between accounts.
 
 ---
 
@@ -25,13 +27,15 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 
 | Tool | Description |
 |---|---|
-| `list_tickets` | Compact table of tickets — titles and metadata only. Supports filtering by status, search query, and pagination. |
+| `list_tickets` | Compact table of tickets — titles and metadata only. Supports filtering by status, search query, category, and pagination. |
 | `get_ticket_details` | Structured metadata + truncated opening message for one ticket. |
 | `get_ticket_messages` | Full conversation thread for one ticket. Returns the most recent N messages (default 5). |
+| `get_ticket_attachments(ticket_id)` | List all attachments on a ticket (opening message + every reply) with IDs, types, sizes, and which message each came from. Falls back to resolving inline `cid:` references when the API returns no structured objects. |
+| `download_attachment(ticket_id, attachment_id)` | Fetch one attachment. Images (PNG/JPG/GIF/WEBP) are returned natively so the agent can view them; other file types return metadata + URL. |
 | `list_statuses` | All statuses in your HappyFox account with their IDs. |
+| `list_categories` | All ticket categories with their IDs (for `list_tickets` filtering and `change_ticket_category`). |
+| `list_priorities` | All ticket priorities with their IDs (for `change_ticket_priority`). |
 | `list_staff` | All staff/agents with their IDs. |
-| **`get_ticket_attachments(ticket_id)`** | List all attachments on a ticket with metadata and download URLs. Returns filenames, sizes, MIME types, and direct download links. |
-| **`download_attachment(attachment_id, output_path=None)`** | Download an attachment file from HappyFox to local storage. Saves to `/mnt/uploads/` by default or custom path if specified. Returns confirmation with file details. |
 
 ### Write Tools
 
@@ -41,8 +45,11 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 |---|---|
 | `add_ticket_update` | Post a public reply or private internal note to a ticket. Optionally change status in the same call. |
 | `create_ticket` | Open a new support ticket. |
-| `rename_ticket` | Update a ticket's subject/title. |
+| `suggest_ticket_rename(ticket_id, suggested_subject, staff_id)` | Post a private note suggesting a better title (the v1.1 API cannot rename subjects — an agent applies it in the UI). |
 | `change_ticket_status` | Change ticket status only (e.g. close, put on hold). |
+| `assign_ticket` | Assign or reassign a ticket to a staff member. |
+| `change_ticket_priority` | Change ticket priority (e.g. escalate to Urgent). |
+| `change_ticket_category` | Move a ticket into a different category. |
 
 ---
 
@@ -52,8 +59,10 @@ Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
 1. list_tickets()                          # Triage the queue — titles only
 2. get_ticket_details(ticket_id)           # Metadata + opening message
 3. get_ticket_messages(ticket_id)          # Full thread when ready to reply
-4. [show draft reply to user for approval]
-5. add_ticket_update(ticket_id, ...)       # Post approved reply
+4. get_ticket_attachments(ticket_id)       # List files, if any are attached
+5. download_attachment(ticket_id, id)      # View an attached image inline
+6. [show draft reply to user for approval]
+7. add_ticket_update(ticket_id, ...)       # Post approved reply
 ```
 
 For status changes:
@@ -95,10 +104,12 @@ services:
 docker compose up -d
 ```
 
-The MCP endpoint will be available at:
+The MCP endpoint will be available at the **root** path (the server is configured to serve at `/`, not FastMCP's default `/mcp`):
 ```
-http://<host>:8000/mcp
+http://<host>:8000/
 ```
+
+With `MCP_TRANSPORT=sse` the endpoint is `http://<host>:8000/sse`.
 
 #### Portainer via Stack
 
@@ -112,7 +123,7 @@ http://<host>:8000/mcp
 | Field | Value |
 |---|---|
 | **Transport** | Streamable HTTP |
-| **URL** | `http://<your-server-ip>:8000/mcp` |
+| **URL** | `http://<your-server-ip>:8000/` |
 
 In `claude_desktop_config.json`:
 ```json
@@ -120,7 +131,7 @@ In `claude_desktop_config.json`:
   "mcpServers": {
     "happyfox": {
       "type": "http",
-      "url": "http://<your-server-ip>:8000/mcp"
+      "url": "http://<your-server-ip>:8000/"
     }
   }
 }
@@ -211,13 +222,24 @@ Full docs: [HappyFox API Reference](https://support.happyfox.com/kb/article/360-
 
 ## Changelog
 
+### v2.1
+- **New:** `get_ticket_attachments` — list every attachment on a ticket (opening message + all replies) with ID, type, size, and source message. Falls back to resolving inline `cid:` references when the API returns no structured attachment objects.
+- **New:** `download_attachment(ticket_id, attachment_id)` — fetch one attachment; images are returned natively so the agent can view them inline.
+- **New:** `list_priorities` + `change_ticket_priority` — escalate/de-escalate tickets.
+- **New:** `assign_ticket` — assign or reassign tickets to staff.
+- **New:** `change_ticket_category` — move tickets between categories.
+- **Changed:** `rename_ticket` is now `suggest_ticket_rename` — posts a private note with a suggested title, because the v1.1 API has no endpoint to rename a subject.
+- **Fix:** Suppressed noisy `ClientDisconnect`/Starlette log messages in HTTP transports.
+- **Fix:** All HappyFox API calls now use a 30s timeout so tools can't hang indefinitely.
+- **Docs:** Corrected the MCP endpoint URL — the server listens at the root path `/`, not `/mcp`.
+
 ### v2.0
 - **Fix:** `list_tickets` returns a compact summary table instead of raw JSON. Resolves context window overflow ([#1](https://github.com/Glitch3dPenguin/happyfox-mcp/issues/1)).
 - **Fix:** Ticket detail/update endpoints corrected from `/tickets/{id}/` to singular `/ticket/{id}/`.
 - **Fix:** Private note endpoint corrected from `staff_private_note` to `staff_pvtnote`.
 - **Fix:** `create_ticket` payload field renamed from `message` to `text` per API spec.
 - **New:** `get_ticket_messages` — fetch conversation thread, most recent N messages.
-- **New:** `rename_ticket` — update a ticket's subject/title.
+- **New:** Title rename via private note suggestion (`suggest_ticket_rename` — the API cannot rename subjects directly).
 - **New:** `change_ticket_status` — dedicated status-only update.
 - **New:** `list_statuses` — look up status names and IDs for your account.
 - **New:** `list_staff` — look up agent names and IDs for your account.
