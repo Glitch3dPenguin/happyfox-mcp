@@ -187,6 +187,12 @@ def get_ticket_details(ticket_id: int) -> str:
     if isinstance(t.get("assigned_to"), dict):
         assignee = t["assigned_to"].get("name", "Unassigned")
 
+    # `or {}` guards against explicit nulls from the API (see get_ticket_messages).
+    status   = t.get("status") or {}
+    priority = t.get("priority") or {}
+    category = t.get("category") or {}
+    contact  = t.get("user") or {}
+
     attach_count = t.get("attachments_count", 0)
     attach_hint  = (f"{attach_count}  (call get_ticket_attachments to list + download)"
                     if attach_count > 0 else "0")
@@ -196,11 +202,11 @@ def get_ticket_details(ticket_id: int) -> str:
         f"Ticket #{ticket_id}  {t.get('display_id', '')}",
         "=" * 60,
         f"Subject    : {t.get('subject', '(no subject)')}",
-        f"Status     : {t.get('status', {}).get('name', '?')}  (id={t.get('status', {}).get('id', '?')})",
-        f"Priority   : {t.get('priority', {}).get('name', '?')}  (id={t.get('priority', {}).get('id', '?')})",
-        f"Category   : {t.get('category', {}).get('name', '?')}  (id={t.get('category', {}).get('id', '?')})",
+        f"Status     : {status.get('name', '?')}  (id={status.get('id', '?')})",
+        f"Priority   : {priority.get('name', '?')}  (id={priority.get('id', '?')})",
+        f"Category   : {category.get('name', '?')}  (id={category.get('id', '?')})",
         f"Assignee   : {assignee}",
-        f"Contact    : {t.get('user', {}).get('name', '?')} <{t.get('user', {}).get('email', '?')}>",
+        f"Contact    : {contact.get('name', '?')} <{contact.get('email', '?')}>",
         f"Created    : {t.get('created_at', '?')}",
         f"Updated    : {t.get('last_updated_at', '?')}",
         f"Messages   : {t.get('messages_count', 0)}  (call get_ticket_messages to read)",
@@ -240,10 +246,13 @@ def get_ticket_messages(ticket_id: int, max_messages: int = 5) -> str:
         "",
     ]
     for i, upd in enumerate(recent, 1):
-        by     = upd.get("by", {})
+        # NOTE: `or {}`, not a .get default - HappyFox returns explicit `null`
+        # for e.g. image-only replies (message: null) or system updates
+        # (by: null), and .get("key", {}) does NOT guard against null values.
+        by     = upd.get("by") or {}
         author = f"{by.get('name', '?')} ({by.get('type', '?')})"
         ts     = upd.get("timestamp", "?")
-        msg    = upd.get("message", {})
+        msg    = upd.get("message") or {}
         body   = msg.get("text") or ""
         if not body and msg.get("html"):
             body = _strip_html(msg["html"])
@@ -318,7 +327,7 @@ def get_ticket_attachments(ticket_id: int) -> str:
         aid   = a.get("id", "?")
         name  = a.get("name", "?")
         ftype = a.get("type") or a.get("content_type") or "unknown"
-        size  = _fmt_size(a.get("size", 0))
+        size  = _fmt_size(a.get("size") or 0)
         src   = a.get("_source", "?")
         lines.append(f"{i:<4} {str(aid):<8} {ftype:<22} {size:<10} {src:<32} {name}")
 
@@ -360,7 +369,7 @@ def download_attachment(ticket_id: int, attachment_id: int):
 
     name   = target.get("name", "file")
     ftype  = target.get("type") or target.get("content_type") or ""
-    size   = target.get("size", 0)
+    size   = target.get("size") or 0
     dl_url = target.get("url") or target.get("download_url") or ""
 
     if not dl_url:
