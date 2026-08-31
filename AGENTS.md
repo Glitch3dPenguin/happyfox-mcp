@@ -4,11 +4,14 @@ This repository contains a single-file Python MCP (Model Context Protocol) serve
 connects AI agents to the HappyFox Help Desk API (v1.1). All server logic lives in
 `happyfox_mcp.py` — there is no package structure, test suite, or lint config.
 
-The server exposes 16 tools: 9 read (`list_tickets`, `get_ticket_details`,
-`get_ticket_messages`, `get_ticket_attachments`, `download_attachment`, `list_statuses`,
-`list_categories`, `list_priorities`, `list_staff`) and 7 write (`add_ticket_update`,
-`create_ticket`, `suggest_ticket_rename`, `change_ticket_status`, `assign_ticket`,
-`change_ticket_priority`, `change_ticket_category`).
+The server exposes 23 tools: 13 read (`check_connection`, `list_tickets`,
+`get_ticket_details`, `get_ticket_messages`, `get_ticket_attachments`,
+`download_attachment`, `list_statuses`, `list_categories`, `list_priorities`,
+`list_staff`, `list_ticket_custom_fields`, `list_contacts`, `get_contact`) and
+10 write (`add_ticket_update`, `create_ticket`, `suggest_ticket_rename`,
+`change_ticket_status`, `assign_ticket`, `change_ticket_priority`,
+`change_ticket_category`, `update_ticket_tags`, `set_ticket_due_date`,
+`update_ticket_custom_fields`).
 
 Per the [agents.md](https://agents.md/) convention, the README is for human users
 (setup, deployment, tool tables); this file carries the agent-focused context —
@@ -47,7 +50,7 @@ There is **no test suite and no linter** in this repo. Verify by:
    HAPPYFOX_DOMAIN=x HAPPYFOX_API_KEY=x HAPPYFOX_AUTH_CODE=x MCP_TRANSPORT=stdio \
      python -c "import asyncio, happyfox_mcp as m; print([t.name for t in asyncio.run(m.mcp.list_tools())])"
    ```
-   All 16 tool names should be listed.
+    All 23 tool names should be listed.
 3. For behavior checks without real credentials, stub `requests` (and optionally
    `mcp.server.fastmcp`) in `sys.modules` before importing the module, then call the
    tool functions directly with fixture ticket payloads.
@@ -60,7 +63,11 @@ There is **no test suite and no linter** in this repo. Verify by:
 - **Single file by design.** Keep all tools in `happyfox_mcp.py`; don't split into a
   package unless explicitly asked.
 - **Every HappyFox HTTP call must pass `timeout=30`** (GET and POST). This was a
-  deliberate fix — tool calls without timeouts can hang an agent forever.
+  deliberate fix — tool calls without timeouts can hang an agent forever. All tools
+  go through `_api_get()` / `_api_post()`, which centralize the timeout, the
+  missing-env-var check, non-JSON response handling, and 401/403/404 error hints —
+  keep new endpoints on those helpers (only the external S3 download in
+  `download_attachment` may use raw `requests`).
 - **Context-window safety is the core design goal.** Read tools return compact,
   human/agent-readable formatted strings, never raw JSON dumps. `list_tickets` must
   never include message bodies; details come from the per-ticket tools on demand.
@@ -110,6 +117,23 @@ There is **no test suite and no linter** in this repo. Verify by:
   in the UI. Don't attempt a "real" rename endpoint — it doesn't exist.
 - `list_tickets` accepts `status` as `_pending` (default), `_all`, `_completed`, or a
   numeric status ID; `size` is clamped to 50; pagination info comes from `page_info`.
+- Advanced filters go in the `q` param as space-joined clauses
+  (`assignee:none priority:"High","Medium" duedate:overdue unresponded:true`);
+  values containing spaces/commas are double-quoted. Combining clauses is verified
+  against a live account. `sort` is a separate URL param (e.g. `sort=due`).
+- `staff_update` also accepts `due_date` (yyyy-mm-dd or null to clear), `cc`, `bcc`,
+  `tags`, `time_spent`, and `send_survey` — `update_tags`-style changes can ride
+  along in a reply.
+- `update_tags` is the one endpoint that takes `staff_id` in the payload, not
+  `staff` (like `staff_update`/`staff_pvtnote` do).
+- Ticket custom fields: metadata from `GET /ticket_custom_fields/`, values set via
+  `POST /ticket/{id}/update_custom_fields/` with `t-cf-<id>` (ticket) / `c-cf-<id>`
+  (contact) keys — contact field IDs come from `GET /user_custom_fields/`.
+- Contacts live at `GET /users/` (list, `q` search on name/email/phone) and
+  `GET /user/<id-or-email>/` (detail). Both are paginated/collection-shaped like
+  `/tickets/` for the list.
+- Attachment URLs from the API are pre-signed S3 links with a ~5-minute expiry —
+  fetch them promptly; don't cache or re-share them.
 - Attachment metadata can be absent even when `attachments_count > 0` (inline CID
   references in HTML) — that's why the CID fallback exists.
 - EU accounts use the `happyfox.net` domain instead of `happyfox.com`.
@@ -154,6 +178,16 @@ Recommended workflow:
 ## Changelog
 
 ### Unreleased
+- **New:** `check_connection` — verify credentials/connectivity with a quick account summary (run first when debugging setup).
+- **New:** `list_contacts` + `get_contact` — search contacts and inspect detail (phones, groups, ticket counts, custom fields) via `/users/` and `/user/<id-or-email>/`.
+- **New:** `update_ticket_tags` — add/remove tags via `/ticket/{id}/update_tags/`.
+- **New:** `set_ticket_due_date` — set or clear a ticket's due date.
+- **New:** `list_ticket_custom_fields` + `update_ticket_custom_fields` — list ticket custom field metadata and set `t-cf-`/`c-cf-` values.
+- **Changed:** `list_tickets` supports structured filters — `assignee`, `priority`, `tag`, `duedate`, `contact`, `unresponded`, `breached` (SLA) — and a `sort` option; the active filter is echoed in the result header.
+- **Changed:** `get_ticket_details` now shows due date, tags, SLA breaches, unresponded flag, source, time spent, last staff/contact reply, contact phone/groups/ticket counts, and any custom field values.
+- **Changed:** `get_ticket_messages` takes `from_start` to read the beginning of long threads instead of only the most recent N.
+- **Changed:** `add_ticket_update` accepts `cc`/`bcc`/`send_survey` (public replies); `create_ticket` accepts `phone`, `tags`, `due_date`, `cc`.
+- **Fix:** All HappyFox calls now go through `_api_get()`/`_api_post()` helpers — centralized 30s timeout, missing-env-var error (instead of a silent `https://None/...` URL), non-JSON response handling, and 401/403/404 error hints.
 - **Docs:** Moved CI/CD, API Reference, and Changelog from README to AGENTS.md (agent-focused context per the agents.md convention).
 - **Docs:** README branding from the official [HappyFox media kit](https://www.happyfox.com/media-kit/) (logo + badges), community-project notice, "Other HappyFox MCP options" section, and trademark attribution.
 - **Fix:** Restored `.env.example` (was an empty file) and added a `.gitignore`.

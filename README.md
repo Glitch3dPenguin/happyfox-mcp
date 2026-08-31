@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/MCP-stdio%20%C2%B7%20streamable--http%20%C2%B7%20sse-8B5CF6" alt="MCP transports" />
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/HappyFox-API%20v1.1-FF5A00" alt="HappyFox API v1.1" />
-  <img src="https://img.shields.io/badge/tools-9%20read%20%C2%B7%207%20write-FF5A00" alt="16 tools" />
+  <img src="https://img.shields.io/badge/tools-13%20read%20%C2%B7%2010%20write-FF5A00" alt="23 tools" />
 </p>
 
 <p align="center">
@@ -28,15 +28,20 @@
 ## Features
 
 - **Context-safe ticket listing** — compact summary table (ID, status, priority, assignee, subject). No message bodies in list output.
-- **On-demand detail fetching** — pull metadata or the full message thread for a single ticket when you need it.
+- **Queue filters & sorting** — filter tickets by assignee, priority, tags, due date, contact, unresponded and SLA-breached state, plus 20+ sort options (due date, priority, created, updated, ...).
+- **On-demand detail fetching** — pull metadata (due date, tags, SLA breaches, time spent, custom fields, contact info) or the full message thread for a single ticket when you need it.
 - **Attachment viewing & downloading** — images are returned natively so the agent can see them inline; other files return metadata + URL.
 - **Status management** — change ticket status, close tickets, look up all available statuses by ID.
 - **Priority & assignment** — escalate/de-escalate priority and assign or reassign tickets to staff.
 - **Category management** — move tickets between categories, filter the queue by category.
+- **Tags & due dates** — add/remove tags and set or clear ticket due dates.
+- **Custom fields** — list ticket custom fields and set ticket/contact custom field values.
+- **Contact lookup** — search contacts and inspect their detail: phones, contact groups, ticket counts, custom fields.
+- **Connection check** — verify credentials and connectivity before starting work.
 - **Draft → confirm pattern** — write tools are designed to be confirmed by the user before posting.
 - **Title rename suggestions** — the v1.1 API can't rename subjects, so the agent posts a private note with a suggested title for a human to apply in the UI.
 - **Private notes** — post internal staff notes that are never sent to the contact.
-- **Full ID lookup** — resolve staff, status, priority, and category IDs before acting, no hardcoding values that differ between accounts.
+- **Full ID lookup** — resolve staff, status, priority, category, and custom-field IDs before acting, no hardcoding values that differ between accounts.
 
 ---
 
@@ -46,27 +51,34 @@
 
 | Tool | Description |
 |---|---|
-| `list_tickets` | Compact table of tickets — titles and metadata only. Supports filtering by status, search query, category, and pagination. |
-| `get_ticket_details` | Structured metadata + truncated opening message for one ticket. |
-| `get_ticket_messages` | Full conversation thread for one ticket. Returns the most recent N messages (default 5). |
+| `check_connection` | Verify credentials and connectivity, with a quick account summary. Run first when debugging a new setup. |
+| `list_tickets` | Compact table of tickets — titles and metadata only. Filters: status, free-form query, category, assignee, priority, tags, due date, contact, unresponded, SLA-breached. 20+ sort options. |
+| `get_ticket_details` | Structured metadata for one ticket — incl. due date, tags, SLA breaches, time spent, last replies, contact phone/groups/ticket counts, and custom field values — plus truncated opening message. |
+| `get_ticket_messages` | Conversation thread for one ticket. Returns the most recent N messages (default 5), or the first N with `from_start=true` for long threads. |
 | `get_ticket_attachments(ticket_id)` | List all attachments on a ticket (opening message + every reply) with IDs, types, sizes, and which message each came from. |
 | `download_attachment(ticket_id, attachment_id)` | Fetch one attachment. Images (PNG/JPG/GIF/WEBP) are returned natively so the agent can view them; other file types return metadata + URL. |
 | `list_statuses` | All statuses in your HappyFox account with their IDs. |
 | `list_categories` | All ticket categories with their IDs (for `list_tickets` filtering and `change_ticket_category`). |
-| `list_priorities` | All ticket priorities with their IDs (for `change_ticket_priority`). |
+| `list_priorities` | All ticket priorities with their IDs and names (for `change_ticket_priority` and `list_tickets(priority=...)`). |
 | `list_staff` | All staff/agents with their IDs. |
+| `list_ticket_custom_fields` | All ticket custom fields with IDs, types, and choice options (for `update_ticket_custom_fields`). |
+| `list_contacts` | List/search contacts (customers) with pending/total ticket counts. |
+| `get_contact` | Full detail for one contact by ID or email: phones, groups, ticket counts, custom fields. |
 
 ### Write Tools
 
 | Tool | Description |
 |---|---|
-| `add_ticket_update` | Post a public reply or private internal note to a ticket. Optionally change status in the same call. |
-| `create_ticket` | Open a new support ticket. |
+| `add_ticket_update` | Post a public reply or private internal note to a ticket. Optionally change status in the same call; public replies support CC/BCC and launching a satisfaction survey. |
+| `create_ticket` | Open a new support ticket, optionally with priority, assignee, phone, tags, due date, and CC. |
 | `suggest_ticket_rename(ticket_id, suggested_subject, staff_id)` | Post a private note suggesting a better title (the v1.1 API cannot rename subjects — an agent applies it in the UI). |
 | `change_ticket_status` | Change ticket status only (e.g. close, put on hold). |
 | `assign_ticket` | Assign or reassign a ticket to a staff member. |
 | `change_ticket_priority` | Change ticket priority (e.g. escalate to Urgent). |
 | `change_ticket_category` | Move a ticket into a different category. |
+| `update_ticket_tags(ticket_id, staff_id, add, remove)` | Add and/or remove comma-separated tags on a ticket. |
+| `set_ticket_due_date(ticket_id, due_date, staff_id)` | Set a ticket due date (yyyy-mm-dd) or clear it with an empty string. |
+| `update_ticket_custom_fields(ticket_id, staff_id, fields)` | Set ticket (`t-cf-<id>`) and contact (`c-cf-<id>`) custom field values. |
 
 ---
 
