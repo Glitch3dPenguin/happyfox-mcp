@@ -1,8 +1,27 @@
-# HappyFox MCP Server
+<p align="center">
+  <img src="assets/happyfox-logo.png" width="96" alt="HappyFox logo" />
+</p>
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that connects AI agents to the HappyFox Help Desk API. Designed to be **context-window safe** — ticket lists return titles and metadata only, so agents can triage a full queue without blowing out their context. Full message bodies are fetched on demand, one ticket at a time.
+<h1 align="center">HappyFox MCP Server</h1>
 
-Supports **stdio** (local), **Streamable HTTP**, and **SSE** transports.
+<p align="center">
+  <img src="https://img.shields.io/badge/MCP-stdio%20%C2%B7%20streamable--http%20%C2%B7%20sse-8B5CF6" alt="MCP transports" />
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/HappyFox-API%20v1.1-FF5A00" alt="HappyFox API v1.1" />
+  <img src="https://img.shields.io/badge/tools-9%20read%20%C2%B7%207%20write-FF5A00" alt="16 tools" />
+</p>
+
+<p align="center">
+  A <a href="https://modelcontextprotocol.io/">Model Context Protocol (MCP)</a> server that connects AI agents to the
+  <a href="https://www.happyfox.com/">HappyFox</a> Help Desk API. Designed to be <strong>context-window safe</strong> —
+  ticket lists return titles and metadata only, so agents can triage a full queue without blowing out their context.
+  Full message bodies are fetched on demand, one ticket at a time.
+</p>
+
+<p align="center">
+  <strong>Community project</strong> — not affiliated with or endorsed by HappyFox Inc.<br/>
+  <a href="#other-happyfox-mcp-options">Other HappyFox MCP options</a> · <a href="https://www.happyfox.com/media-kit/">Brand assets</a>
+</p>
 
 ---
 
@@ -197,7 +216,29 @@ Full docs: [HappyFox API Reference](https://support.happyfox.com/kb/article/360-
 
 ---
 
+## Other HappyFox MCP options
+
+This is a **community project**. As of August 2026, HappyFox Inc. does not ship an official MCP server on any plan —
+its [AI product](https://www.happyfox.com/happyfox-ai/) and [integrations catalog](https://www.happyfox.com/helpdesk/integrations/)
+cover in-product AI and 100+ app integrations, but there is no MCP endpoint of their own. Every HappyFox MCP
+integration is third-party, and this is not the only one:
+
+| Option | Type | What it is |
+|---|---|---|
+| **This server** | Self-hosted | Context-safe MCP server for the HappyFox v1.1 API — stdio, Streamable HTTP, and SSE, with a Docker image on GHCR. |
+| [Zapier MCP](https://zapier.com/mcp/happyfox) | Hosted | HappyFox access through Zapier's general-purpose MCP connector. |
+| [viaSocket](https://viasocket.com/mcp/happyfox) | Hosted | Hosted MCP endpoint with a no-code configuration UI. |
+| [leoherzog/happyfox-mcp](https://github.com/leoherzog/happyfox-mcp) | Self-hosted | Another open-source implementation, deployed as a Cloudflare Worker. |
+
+If you just need a hosted endpoint, one of the above may save you the ops work. This server is for teams that want
+their own credentials, their own infrastructure, and a queue-friendly read model.
+
+---
+
 ## Changelog
+
+### Unreleased
+- **Docs:** README branding from the official [HappyFox media kit](https://www.happyfox.com/media-kit/) (logo + badges), community-project notice, "Other HappyFox MCP options" section, and trademark attribution.
 
 ### v2.1
 - **New:** `get_ticket_attachments` — list every attachment on a ticket (opening message + all replies) with ID, type, size, and source message. Falls back to resolving inline `cid:` references when the API returns no structured attachment objects.
@@ -225,3 +266,12 @@ Full docs: [HappyFox API Reference](https://support.happyfox.com/kb/article/360-
 
 ### v1.0
 - Initial release.
+
+---
+
+## Branding & trademarks
+
+HappyFox and the HappyFox logo are trademarks of HappyFox Inc. This project is **not affiliated with, endorsed by,
+or sponsored by** HappyFox Inc. Logos are sourced from the official
+[HappyFox media kit](https://www.happyfox.com/media-kit/) and used in line with its brand guidelines: the logo is
+reproduced unmodified with clear space, and "HappyFox" is always written as a single word with an uppercase H and F.
