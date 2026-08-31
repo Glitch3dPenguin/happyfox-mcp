@@ -10,6 +10,10 @@ The server exposes 16 tools: 9 read (`list_tickets`, `get_ticket_details`,
 `create_ticket`, `suggest_ticket_rename`, `change_ticket_status`, `assign_ticket`,
 `change_ticket_priority`, `change_ticket_category`).
 
+Per the [agents.md](https://agents.md/) convention, the README is for human users
+(setup, deployment, tool tables); this file carries the agent-focused context —
+build/verify steps, conventions, API gotchas, deployment, and the changelog.
+
 ## Setup commands
 
 - Install deps: `pip install -r requirements.txt` (needs Python 3.10+; the Docker image uses 3.12)
@@ -84,6 +88,12 @@ There is **no test suite and no linter** in this repo. Verify by:
   no undo** — keep the "confirm with the user first" instruction in every write tool's
   docstring.
 
+## HappyFox API reference
+
+- Base URL: `https://{HAPPYFOX_DOMAIN}/api/1.1/json` — all tools use the v1.1 JSON API.
+- Full docs: [HappyFox API Reference](https://support.happyfox.com/kb/article/360-api-for-happyfox/);
+  credential setup: [Creating an API Key / Auth Code](https://support.happyfox.com/kb/article/476-create-api-key-auth-code-happyfox/).
+
 ## HappyFox API gotchas (learned the hard way — do not regress)
 
 - Ticket endpoints are **singular**: `/ticket/{id}/`, `/ticket/{id}/staff_update/`,
@@ -126,15 +136,54 @@ Recommended workflow:
   `change_ticket_priority()`, `list_categories()` before category filters/changes, and
   `list_staff()` for any write tool that takes `staff_id`.
 
-## Deployment
+## Deployment & CI/CD
 
-- The Docker image is built on every push to `main` and on every published release,
-  and pushed to `ghcr.io/glitch3dpenguin/happyfox-mcp` with tags `:latest`,
-  `:sha-<commit>`, and semver tags (`:v2.1.0`, `:v2.1`, `:v2`) for tagged releases.
+- The only CI is `.github/workflows/docker-publish.yml`: on every push to `main` and
+  every published release it builds the Docker image and pushes it to
+  `ghcr.io/glitch3dpenguin/happyfox-mcp` with tags `:latest`, `:sha-<commit>` (pinned
+  to a commit for traceability), and semver tags (`:v2.1.0`, `:v2.1`, `:v2`) for tagged
+  releases. It runs no tests — a broken module is only caught by the build step.
 - The container serves Streamable HTTP at `http://<host>:8000/` and SSE at
   `http://<host>:8000/sse`.
-- After user-facing changes, update the README (tool tables, endpoint docs, and the
-  Changelog) in the same commit.
+- If consumers run this in Portainer, a stack
+  [webhook](https://docs.portainer.io/user/docker/stacks/webhooks) can auto-pull
+  `:latest` whenever a new image is pushed.
+- After user-facing changes, update the README (tool tables, endpoint docs) and the
+  Changelog below in the same commit.
+
+## Changelog
+
+### Unreleased
+- **Docs:** Moved CI/CD, API Reference, and Changelog from README to AGENTS.md (agent-focused context per the agents.md convention).
+- **Docs:** README branding from the official [HappyFox media kit](https://www.happyfox.com/media-kit/) (logo + badges), community-project notice, "Other HappyFox MCP options" section, and trademark attribution.
+- **Fix:** Restored `.env.example` (was an empty file) and added a `.gitignore`.
+
+### v2.1
+- **New:** `get_ticket_attachments` — list every attachment on a ticket (opening message + all replies) with ID, type, size, and source message. Falls back to resolving inline `cid:` references when the API returns no structured attachment objects.
+- **New:** `download_attachment(ticket_id, attachment_id)` — fetch one attachment; images are returned natively so the agent can view them inline.
+- **New:** `list_priorities` + `change_ticket_priority` — escalate/de-escalate tickets.
+- **New:** `assign_ticket` — assign or reassign tickets to staff.
+- **New:** `change_ticket_category` — move tickets between categories.
+- **Changed:** `rename_ticket` is now `suggest_ticket_rename` — posts a private note with a suggested title, because the v1.1 API has no endpoint to rename a subject.
+- **Fix:** Suppressed noisy `ClientDisconnect`/Starlette log messages in HTTP transports.
+- **Fix:** All HappyFox API calls now use a 30s timeout so tools can't hang indefinitely.
+- **Docs:** Corrected the MCP endpoint URL — the server listens at the root path `/`, not `/mcp`.
+
+### v2.0
+- **Fix:** `list_tickets` returns a compact summary table instead of raw JSON. Resolves context window overflow ([#1](https://github.com/Glitch3dPenguin/happyfox-mcp/issues/1)).
+- **Fix:** Ticket detail/update endpoints corrected from `/tickets/{id}/` to singular `/ticket/{id}/`.
+- **Fix:** Private note endpoint corrected from `staff_private_note` to `staff_pvtnote`.
+- **Fix:** `create_ticket` payload field renamed from `message` to `text` per API spec.
+- **New:** `get_ticket_messages` — fetch conversation thread, most recent N messages.
+- **New:** Title rename via private note suggestion (`suggest_ticket_rename` — the API cannot rename subjects directly).
+- **New:** `change_ticket_status` — dedicated status-only update.
+- **New:** `list_statuses` — look up status names and IDs for your account.
+- **New:** `list_staff` — look up agent names and IDs for your account.
+- **New:** Streamable HTTP and SSE transport support via `MCP_TRANSPORT` env var.
+- **New:** Dockerfile, docker-compose, and GitHub Actions CI/CD pipeline.
+
+### v1.0
+- Initial release.
 
 ## Commit and PR guidelines
 

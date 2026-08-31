@@ -192,30 +192,6 @@ See [Generating API Keys](https://support.happyfox.com/kb/article/476-create-api
 
 ---
 
-## CI/CD
-
-Every push to `main` triggers a GitHub Actions workflow that:
-
-1. Builds the Docker image
-2. Pushes it to `ghcr.io/glitch3dpenguin/happyfox-mcp` with the following tags:
-   - `:latest` — always points to the current `main`
-   - `:sha-<commit>` — pinned to a specific commit for traceability
-   - `:v2.1.0`, `:v2.1`, `:v2` — on tagged releases
-
-If you're running in Portainer, set up a [webhook](https://docs.portainer.io/user/docker/stacks/webhooks) on your stack to auto-pull `:latest` whenever a new image is pushed.
-
----
-
-## API Reference
-
-All tools use the **HappyFox v1.1 JSON API** with HTTP Basic Authentication.
-
-Base URL: `https://<HAPPYFOX_DOMAIN>/api/1.1/json/`
-
-Full docs: [HappyFox API Reference](https://support.happyfox.com/kb/article/360-api-for-happyfox/)
-
----
-
 ## Other HappyFox MCP options
 
 This is a **community project**. As of August 2026, HappyFox Inc. does not ship an official MCP server on any plan —
@@ -232,40 +208,6 @@ integration is third-party, and this is not the only one:
 
 If you just need a hosted endpoint, one of the above may save you the ops work. This server is for teams that want
 their own credentials, their own infrastructure, and a queue-friendly read model.
-
----
-
-## Changelog
-
-### Unreleased
-- **Docs:** README branding from the official [HappyFox media kit](https://www.happyfox.com/media-kit/) (logo + badges), community-project notice, "Other HappyFox MCP options" section, and trademark attribution.
-
-### v2.1
-- **New:** `get_ticket_attachments` — list every attachment on a ticket (opening message + all replies) with ID, type, size, and source message. Falls back to resolving inline `cid:` references when the API returns no structured attachment objects.
-- **New:** `download_attachment(ticket_id, attachment_id)` — fetch one attachment; images are returned natively so the agent can view them inline.
-- **New:** `list_priorities` + `change_ticket_priority` — escalate/de-escalate tickets.
-- **New:** `assign_ticket` — assign or reassign tickets to staff.
-- **New:** `change_ticket_category` — move tickets between categories.
-- **Changed:** `rename_ticket` is now `suggest_ticket_rename` — posts a private note with a suggested title, because the v1.1 API has no endpoint to rename a subject.
-- **Fix:** Suppressed noisy `ClientDisconnect`/Starlette log messages in HTTP transports.
-- **Fix:** All HappyFox API calls now use a 30s timeout so tools can't hang indefinitely.
-- **Docs:** Corrected the MCP endpoint URL — the server listens at the root path `/`, not `/mcp`.
-
-### v2.0
-- **Fix:** `list_tickets` returns a compact summary table instead of raw JSON. Resolves context window overflow ([#1](https://github.com/Glitch3dPenguin/happyfox-mcp/issues/1)).
-- **Fix:** Ticket detail/update endpoints corrected from `/tickets/{id}/` to singular `/ticket/{id}/`.
-- **Fix:** Private note endpoint corrected from `staff_private_note` to `staff_pvtnote`.
-- **Fix:** `create_ticket` payload field renamed from `message` to `text` per API spec.
-- **New:** `get_ticket_messages` — fetch conversation thread, most recent N messages.
-- **New:** Title rename via private note suggestion (`suggest_ticket_rename` — the API cannot rename subjects directly).
-- **New:** `change_ticket_status` — dedicated status-only update.
-- **New:** `list_statuses` — look up status names and IDs for your account.
-- **New:** `list_staff` — look up agent names and IDs for your account.
-- **New:** Streamable HTTP and SSE transport support via `MCP_TRANSPORT` env var.
-- **New:** Dockerfile, docker-compose, and GitHub Actions CI/CD pipeline.
-
-### v1.0
-- Initial release.
 
 ---
 
