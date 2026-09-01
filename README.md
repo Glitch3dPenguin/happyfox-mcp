@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/happyfox-logo.png" width="96" alt="HappyFox logo" />
+  <img src="assets/HF-MCP-Community-Logo.png" width="96" alt="HappyFox MCP Community logo" />
 </p>
 
 <h1 align="center">HappyFox MCP Server</h1>
@@ -226,6 +226,5 @@ their own credentials, their own infrastructure, and a queue-friendly read model
 ## Branding & trademarks
 
 HappyFox and the HappyFox logo are trademarks of HappyFox Inc. This project is **not affiliated with, endorsed by,
-or sponsored by** HappyFox Inc. Logos are sourced from the official
-[HappyFox media kit](https://www.happyfox.com/media-kit/) and used in line with its brand guidelines: the logo is
-reproduced unmodified with clear space, and "HappyFox" is always written as a single word with an uppercase H and F.
+or sponsored by** HappyFox Inc. The logo above is this community project's own artwork — no HappyFox media-kit
+assets are used. "HappyFox" is always written as a single word with an uppercase H and F.
