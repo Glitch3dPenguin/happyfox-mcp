@@ -3,3 +3,4 @@ __pycache__/
 .env
 .opencode/
 *.log
+.DS_Store
